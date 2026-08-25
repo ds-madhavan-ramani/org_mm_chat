@@ -22,8 +22,30 @@ st.title(f"📁 Data Sources — {project.project_name}")
 st.caption(
     "Add documents any time — there's no setup step required before this app "
     "is usable. Upload files directly, or point at a SharePoint folder and "
-    "pick what to bring in."
+    "pick what to bring in. Newly ingested or updated documents are indexed "
+    "automatically, right after ingest."
 )
+
+
+def _reindex(session, project, results) -> int:
+    """Indexes/re-indexes exactly the documents this run touched (new or
+    changed) — a rebuild for those doc_ids specifically, not the whole
+    project, so an unrelated document's index isn't rebuilt on every run."""
+    doc_ids = [r.doc_id for r in results if r.status in ("INGESTED", "UPDATED") and r.doc_id]
+    if not doc_ids:
+        return 0
+    return build_index_for_project(session, project, doc_ids=doc_ids, rebuild=True)
+
+
+def _status_line(r) -> str:
+    if r.status == "INGESTED":
+        return f"✅ {r.file_name} — ingested (doc_id={r.doc_id})"
+    if r.status == "UPDATED":
+        return f"🔄 {r.file_name} — content changed, index refreshed (doc_id={r.doc_id})"
+    if r.status == "SKIPPED_DUPLICATE":
+        return f"↪️ {r.file_name} — unchanged, skipped"
+    return f"❌ {r.file_name} — {r.error}"
+
 
 tab_upload, tab_sharepoint, tab_index = st.tabs(["📤 Upload Files", "🔗 SharePoint Folder", "🌳 Index"])
 
@@ -37,26 +59,32 @@ with tab_upload:
     if uploaded and st.button("Ingest uploaded files", type="primary"):
         with st.spinner(f"Ingesting {len(uploaded)} file(s)…"):
             results = ingest_uploaded_files(session, project, uploaded)
+            indexed_count = _reindex(session, project, results)
         for r in results:
-            if r.status == "INGESTED":
-                st.success(f"✅ {r.file_name} — ingested (doc_id={r.doc_id})")
-            elif r.status == "SKIPPED_DUPLICATE":
-                st.info(f"↪️ {r.file_name} — already ingested, skipped")
-            else:
-                st.error(f"❌ {r.file_name} — {r.error}")
-        st.info("Go to the **Index** tab to build/update the tree index for these documents.")
+            fn = st.success if r.status == "INGESTED" else (
+                st.info if r.status == "SKIPPED_DUPLICATE" else st.error)
+            fn(_status_line(r))
+        if indexed_count:
+            st.success(f"Indexed {indexed_count} document(s) — ready to ask about in Chat.")
 
 # ---------------------------------------------------------------------------
 with tab_sharepoint:
-    st.subheader("Ingest from a SharePoint folder")
+    st.subheader("Ingest from SharePoint")
     default_folder = project.sharepoint_default_folder or ""
-    folder_url = st.text_input("SharePoint folder URL", value=default_folder,
-                               placeholder="https://metrotrains.sharepoint.com/:f:/s/.../...")
+    st.caption("📁 Source: Clause 6.6(d) OCMS Review Group Minutes")
+
+    with st.expander("Use a different SharePoint folder instead"):
+        override_folder = st.text_input(
+            "SharePoint folder URL", placeholder="https://metrotrains.sharepoint.com/:f:/s/.../..."
+        )
+    folder_url = override_folder.strip() if override_folder.strip() else default_folder
 
     if "sp_listing" not in st.session_state:
         st.session_state["sp_listing"] = None
 
-    if st.button("List files in folder"):
+    if not folder_url:
+        st.warning("This project has no SharePoint folder configured — use the override above.")
+    elif st.button("List files in folder"):
         with st.spinner("Listing folder from SharePoint…"):
             try:
                 st.session_state["sp_listing"] = list_sharepoint_folder(session, folder_url)
@@ -79,22 +107,22 @@ with tab_sharepoint:
                 results = ingest_selected_files(
                     session, project, st.session_state["sp_folder_url"], selected_items
                 )
+                indexed_count = _reindex(session, project, results)
             for r in results:
-                if r.status == "INGESTED":
-                    st.success(f"✅ {r.file_name} — ingested (doc_id={r.doc_id})")
-                elif r.status == "SKIPPED_DUPLICATE":
-                    st.info(f"↪️ {r.file_name} — already ingested, skipped")
-                else:
-                    st.error(f"❌ {r.file_name} — {r.error}")
-            st.info("Go to the **Index** tab to build/update the tree index for these documents.")
+                fn = st.success if r.status in ("INGESTED", "UPDATED") else (
+                    st.info if r.status == "SKIPPED_DUPLICATE" else st.error)
+                fn(_status_line(r))
+            if indexed_count:
+                st.success(f"Indexed {indexed_count} document(s) — ready to ask about in Chat.")
 
 # ---------------------------------------------------------------------------
 with tab_index:
-    st.subheader("Build / refresh the tree index")
+    st.subheader("Manual index rebuild")
     st.write(
-        "Documents are searchable in Chat only after they've been indexed. "
-        "New documents are indexed automatically the first time; use "
-        "**Rebuild all** if you've changed the segmentation profile."
+        "Documents are indexed automatically right after they're ingested "
+        "or updated — you shouldn't normally need this tab. Use **Rebuild "
+        "all** only if the segmentation profile changes, or the index "
+        "otherwise needs to be regenerated from scratch."
     )
     col1, col2 = st.columns(2)
     with col1:

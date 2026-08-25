@@ -8,6 +8,14 @@ folder URL. Two-step, both driven from the Streamlit Data Sources page:
 Unlike ocms-llm-wiki's 01_sync_sharepoint.py, there is no hardcoded site,
 no LY/month folder convention, and no automatic file-priority selection —
 the user points at any folder and ticks what they want.
+
+Every selected item is re-downloaded and re-parsed on each run (not just
+new ones) so that an edit to an already-ingested SharePoint file is
+detected — the per-item SHAREPOINT_ITEM_ID identifies the same logical
+document across edits, and ingest_selected_files updates its existing
+RAW_DOCUMENTS row in place (status "UPDATED") when the freshly-parsed
+content's hash differs from what's stored, rather than treating every
+run as either brand-new or an unchanged duplicate.
 """
 
 import hashlib
@@ -26,7 +34,7 @@ logger = get_logger(__name__)
 @dataclass
 class IngestResult:
     file_name: str
-    status: str
+    status: str          # 'INGESTED' | 'UPDATED' | 'SKIPPED_DUPLICATE' | 'FAILED'
     doc_id: int = None
     error: str = None
 
@@ -60,16 +68,14 @@ def ingest_selected_files(session, project: ProjectConfig, folder_url: str,
 
     for item in selected_items:
         try:
-            # Dedup on Graph item id — re-running ingest on an unchanged
-            # folder should not re-download/re-parse files already ingested.
+            # Keyed on Graph item id (a stable per-file identity, not a
+            # content hash) so a file that's been edited since it was last
+            # ingested is detected and updated in place, rather than
+            # skipped as an unchanged duplicate.
             existing = session.sql(
-                f"SELECT DOC_ID FROM {schema}.RAW_DOCUMENTS WHERE SHAREPOINT_ITEM_ID = ?",
+                f"SELECT DOC_ID, SOURCE_HASH FROM {schema}.RAW_DOCUMENTS WHERE SHAREPOINT_ITEM_ID = ?",
                 params=[item.item_id],
             ).collect()
-            if existing:
-                results.append(IngestResult(item.name, "SKIPPED_DUPLICATE",
-                                             doc_id=existing[0]["DOC_ID"]))
-                continue
 
             raw_bytes = graph_client.download_file(token, drive_id, item.item_id)
             stage_path = f"{stage}/{item.name}"
@@ -92,20 +98,27 @@ def ingest_selected_files(session, project: ProjectConfig, folder_url: str,
                 continue
 
             source_hash = hashlib.sha256(raw_text.encode()).hexdigest()
+
+            if existing and existing[0]["SOURCE_HASH"] == source_hash:
+                results.append(IngestResult(item.name, "SKIPPED_DUPLICATE",
+                                             doc_id=existing[0]["DOC_ID"]))
+                continue
+
             session.sql(
-                SQLBuilder.build_merge_raw_document(schema),
+                SQLBuilder.build_merge_raw_document_by_sharepoint_item(schema),
                 params=[item.name, stage_path, "SHAREPOINT", item.item_id,
                         None, raw_text, source_hash],
             ).collect()
 
             doc_id = session.sql(
-                f"SELECT DOC_ID FROM {schema}.RAW_DOCUMENTS WHERE SOURCE_HASH = ?",
-                params=[source_hash],
+                f"SELECT DOC_ID FROM {schema}.RAW_DOCUMENTS WHERE SHAREPOINT_ITEM_ID = ?",
+                params=[item.item_id],
             ).collect()[0]["DOC_ID"]
-            results.append(IngestResult(item.name, "INGESTED", doc_id=doc_id))
+            status = "UPDATED" if existing else "INGESTED"
+            results.append(IngestResult(item.name, status, doc_id=doc_id))
 
             log_event(logger, "INGEST_SHAREPOINT_FILE", project.project_code,
-                      file=item.name, status="INGESTED")
+                      file=item.name, status=status)
 
         except Exception as e:  # noqa: BLE001
             logger.exception("EVENT=INGEST_SHAREPOINT_ERROR file=%s", item.name)
@@ -137,7 +150,7 @@ def _extract_text(parse_result) -> str:
 
 def _log_sync_run(session, project: ProjectConfig, results: List[IngestResult]):
     from config import DATABASE, CATALOG_SCHEMA
-    ingested = sum(1 for r in results if r.status == "INGESTED")
+    ingested = sum(1 for r in results if r.status in ("INGESTED", "UPDATED"))
     skipped = sum(1 for r in results if r.status == "SKIPPED_DUPLICATE")
     failed = sum(1 for r in results if r.status == "FAILED")
     session.sql(

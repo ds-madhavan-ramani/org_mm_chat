@@ -100,13 +100,13 @@ Snowflake Notebooks:
    further — safe to re-run.
 4. **Deploy the app** — stages `python/` onto the project's own stage
    preserving its folder structure, stages `streamlit/`'s contents
-   **flattened to the stage root** (`streamlit/app.py` → `@stage/app.py`,
-   `streamlit/pages/1_Chat.py` → `@stage/pages/1_Chat.py` — see the
-   `MAIN_FILE` gotcha below for why), stages the single matching dependency
-   manifest (`environment.yml`, since this project runs on warehouse
-   runtime), and runs `CREATE OR REPLACE STREAMLIT ... MAIN_FILE = 'app.py'
-   ... EXTERNAL_ACCESS_INTEGRATIONS = (GRAPH_API_ACCESS_INTEGRATION)`. Safe
-   to re-run any time you change app code — fully idempotent.
+   **flattened to the stage root** (`streamlit/Chat.py` → `@stage/Chat.py`,
+   `streamlit/pages/1_Data_Sources.py` → `@stage/pages/1_Data_Sources.py` —
+   see the `MAIN_FILE` gotcha below for why), stages the single matching
+   dependency manifest (`environment.yml`, since this project runs on
+   warehouse runtime), and runs `CREATE OR REPLACE STREAMLIT ... MAIN_FILE =
+   'Chat.py' ... EXTERNAL_ACCESS_INTEGRATIONS = (GRAPH_API_ACCESS_INTEGRATION)`.
+   Safe to re-run any time you change app code — fully idempotent.
 
    *Ignore the leftover debug cells further down in the notebook*
    (`MINIMAL_TEST_APP`, stray `ALTER`/`DESCRIBE STREAMLIT` statements) —
@@ -119,25 +119,38 @@ Snowflake Notebooks:
 
 From the app, **Data Sources** page:
 
-- **SharePoint Folder** tab — the folder URL is pre-filled with the Clause
-  6.6(d) OCMS Review Group Minutes folder. Click **List files**, tick the
-  `BIS_ORG_Meeting_Minutes.xlsx` file(s) you want, click **Ingest selected
-  files**. Already-ingested files are skipped automatically (deduped on the
-  SharePoint item ID).
+- **SharePoint Folder** tab — shows a friendly label for this project's
+  configured folder (Clause 6.6(d) OCMS Review Group Minutes) rather than
+  its raw URL; use the collapsed **"Use a different SharePoint folder
+  instead"** expander only if you need to point at somewhere else for one
+  run. Click **List files**, tick the `BIS_ORG_Meeting_Minutes.xlsx`
+  file(s) you want, click **Ingest selected files**.
+  - A file whose content is unchanged since it was last ingested is
+    skipped.
+  - A file that's been **edited** in SharePoint since it was last ingested
+    is detected (matched on its stable SharePoint item ID, not by content)
+    and its existing row is **updated in place** — not left as a stale
+    duplicate alongside a new one.
+  - Newly ingested or updated documents are **indexed automatically**,
+    right after ingest, in the same click — no separate manual step.
 - **Upload Files** tab — for any file not in that SharePoint folder (drop
-  PDF/DOCX/TXT/XLSX directly).
-- **Index** tab — new documents are indexed automatically the first time;
-  use **Rebuild all** if the segmentation profile ever changes.
+  PDF/DOCX/TXT/XLSX directly); also auto-indexes after ingest.
+- **Index** tab — a fallback for manual use only (e.g. **Rebuild all**
+  after changing the segmentation profile); not part of the normal flow
+  since ingest already indexes automatically.
 
 `.xlsx`/`.xlsm` files are parsed natively (every sheet, row-by-row) rather
 than through OCR — see `python/ingestion/xlsx_parser.py`.
 
 ## Using the chat
 
-- **Chat** — ask a question, get an answer with the source file(s) it was
-  drawn from shown under **Sources**; a ⚡ marks answers served from cache.
+- **Chat** — this deployment's default/landing page (no separate "pick a
+  project" screen — there's only one project here). Ask a question, get an
+  answer with the source file(s) it was drawn from shown under **Sources**;
+  a ⚡ marks answers served from cache.
 - **Sync Status** — document/index counts and recent ingestion run history,
-  useful for confirming a SharePoint sync actually picked up new files.
+  useful for confirming a SharePoint sync actually picked up new/changed
+  files.
 
 ## Known account-level gotchas (Streamlit-in-Snowflake)
 
@@ -158,11 +171,15 @@ than through OCR — see `python/ingestion/xlsx_parser.py`.
   subfolder, failed identically to the real app; the exact same content at
   the stage root worked. `__file__`/`os.path.dirname(__file__)` were
   separately confirmed to behave normally (`/tmp/appRoot/...`) and are not
-  the cause. **Fix**: `MAIN_FILE` is `'app.py'`, not `'streamlit/app.py'` —
-  the deploy cell flattens `streamlit/`'s contents to the stage root
+  the cause. **Fix**: `MAIN_FILE` is `'Chat.py'`, not `'streamlit/app.py'`
+  — the deploy cell flattens `streamlit/`'s contents to the stage root
   instead of preserving its folder name (`python/` keeps its own folder
   structure since it's imported via `sys.path`, not used as `MAIN_FILE`).
-  If this ever needs re-diagnosing, isolate one variable at a time: a bare
+  The entry script is named `Chat.py` rather than `app.py` specifically so
+  its sidebar nav label reads "Chat" (Streamlit derives a page's label
+  from its filename) — Chat is this deployment's default/landing page, not
+  a separate project-picker screen. If this ever needs re-diagnosing,
+  isolate one variable at a time: a bare
   `st.write` app is fastest for testing whether an app-load failure is
   structural (stage layout / `MAIN_FILE`) vs. something in the app's own
   code.
@@ -201,19 +218,35 @@ than through OCR — see `python/ingestion/xlsx_parser.py`.
 - **A shared compute pool can silently block startup** if it's already at
   `max_nodes`. Check `SHOW COMPUTE POOLS` before assuming a container-runtime
   deploy will work.
-- **Warehouse runtime defaults to a very old Streamlit version
-  (1.22.0 on this account) unless `environment.yml` pins one explicitly** —
-  nothing about our other dependency pins (`pyproject.toml`,
-  `requirements.txt`) affects warehouse runtime at all; those only apply
-  under container runtime. The unpinned default broke two things: `st.page_link()`
-  (added 1.31 — raised `StreamlitAPIException: page_link() is not a valid
-  Streamlit command`; fixed by removing those calls, since Streamlit's
-  automatic `pages/` sidebar navigation already covers the same thing) and
-  `st.chat_input()`/`st.file_uploader()` (1.22 predates `chat_input`
-  entirely, and its own `file_uploader` explicitly errors asking for
-  ≥1.26.0). Fixed by adding `streamlit=1.32.3` to `environment.yml`'s
-  dependencies — pin the version explicitly rather than assuming any
-  particular default.
+- **Warehouse runtime runs Streamlit 1.22.0 on this account, and pinning
+  `environment.yml`'s `streamlit=1.32.3` does not change that** — confirmed
+  by redeploying after adding the pin and seeing the exact same errors
+  (`st.file_uploader` still names "1.22.0" in its own error text). Nothing
+  about `pyproject.toml`/`requirements.txt` affects warehouse runtime
+  either — those only apply under container runtime. This looks like a
+  genuine platform limitation on this account/region rather than something
+  fixable from the deploy cell: `environment.yml` can pin ordinary
+  importable packages (see the `openpyxl` case above), but not, apparently,
+  the Streamlit engine version itself. Investigate with Snowflake
+  support/account admin if this needs a real fix (e.g. an account-level
+  runtime version bump); the pin is left in `environment.yml` in case a
+  future account/region behaves differently.
+
+  Two concrete breakages and how they're handled given the version can't
+  be changed here:
+  - `st.page_link()` (added 1.31) — removed; Streamlit's automatic `pages/`
+    sidebar navigation already covers the same thing without it.
+  - `st.chat_input()`/`st.chat_message()` (added 1.24, both missing on
+    1.22) — `Chat.py` checks `hasattr(st, "chat_input")` and falls back to
+    a plain `st.form` + `st.text_input` + a manually-labeled `st.container`
+    when they're unavailable, so Chat works either way.
+  - `st.file_uploader()` — Snowflake's own error names 1.26.0 as the
+    minimum, and there's no older-API fallback for file upload the way
+    there is for chat. Not fixed in code. Not currently a hard blocker for
+    this deployment's actual use case, though: the **Upload Files** tab is
+    a secondary path — meeting minutes come from the fixed SharePoint
+    folder via the **SharePoint Folder** tab, which doesn't use
+    `file_uploader` at all.
 
 ## Removing the project
 
@@ -262,14 +295,13 @@ project-llm-wiki/
 │       ├── sql_script.py
 │       └── logging_utils.py
 ├── streamlit/
-│   ├── app.py                          # project selector
+│   ├── Chat.py                          # entry point AND the chat UI (default/landing page)
 │   ├── environment.yml                 # warehouse-runtime dependencies (conda)
 │   ├── pyproject.toml                  # container-runtime dependencies (pip/uv)
 │   ├── requirements.txt                # pip reference list (local dev / external session use)
 │   └── pages/
-│       ├── 1_Chat.py
-│       ├── 2_Data_Sources.py
-│       └── 3_Sync_Status.py
+│       ├── 1_Data_Sources.py
+│       └── 2_Sync_Status.py
 └── pipeline/
     └── 00_provision_project.ipynb      # connect, catalog setup, create ORG_MM_CHAT, deploy
 ```
