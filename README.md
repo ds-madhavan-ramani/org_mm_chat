@@ -34,8 +34,9 @@ SharePoint (Clause 6.6(d) OCMS Review Group Minutes)
         │  Microsoft Graph API
         ▼
 RAW_DOCUMENTS  (MEDSOCMS.DATA_ORG_MM_CHAT)
-   .xlsx → parsed natively (pandas/openpyxl), NOT AI_PARSE_DOCUMENT —
-           spreadsheets are structured data, not scanned pages
+   .xlsx → parsed natively (stdlib zipfile/XML, no third-party package),
+           NOT AI_PARSE_DOCUMENT — spreadsheets are structured data, not
+           scanned pages
    .pdf/.docx/.txt → AI_PARSE_DOCUMENT (OCR)
         │  index_builder.py (ORG_MEETING_MINUTES segmentation profile)
         ▼
@@ -153,6 +154,22 @@ than through OCR — see `python/ingestion/xlsx_parser.py`.
   app, and confirming the fix by explicitly setting
   `RUNTIME_NAME = 'SYSTEM$WAREHOUSE_RUNTIME'`. The deploy cell now sets this
   on every `CREATE STREAMLIT`, not just the container-runtime branch.
+- **The same generic `TypeError: bad argument type for built-in operation`
+  can also come from an unresolvable `environment.yml` package** — it's not
+  a diagnostic message, just whatever Snowflake's sandbox bootstrap throws
+  when it can't stand up the app's Python environment, and that happens
+  *before* any of the app's own code runs. Adding `openpyxl` to
+  `environment.yml` (for xlsx ingestion) reproduced this exact error,
+  confirmed by importing every app dependency module-by-module from inside
+  a Notebook cell (same account/warehouse) — `openpyxl` was the one import
+  that failed (`ModuleNotFoundError`), meaning it isn't resolvable from this
+  account's Anaconda channel snapshot for warehouse-runtime Streamlit apps.
+  Fix: `python/ingestion/xlsx_parser.py` now reads `.xlsx` with only the
+  Python standard library (`zipfile` + `xml.etree.ElementTree` — an `.xlsx`
+  is just a zip of XML parts), so there's no longer a package to fail to
+  resolve. If a future dependency addition breaks app load the same way,
+  re-run the module-by-module import test to find the culprit rather than
+  guessing from the error message.
 - **Stage exactly one dependency manifest** (`environment.yml` *or*
   `pyproject.toml`, matching the runtime) — staging both is ambiguous and
   can make Snowflake attempt PyPI resolution even on warehouse runtime.
@@ -201,7 +218,7 @@ project-llm-wiki/
 │   ├── ingestion/
 │   │   ├── file_ingest.py              # upload → RAW_DOCUMENTS
 │   │   ├── sharepoint_ingest.py        # SharePoint folder → RAW_DOCUMENTS
-│   │   ├── xlsx_parser.py              # native xlsx/xlsm parsing (pandas/openpyxl)
+│   │   ├── xlsx_parser.py              # native xlsx/xlsm parsing (stdlib only, no openpyxl)
 │   │   └── index_builder.py            # RAW_DOCUMENTS → DOCUMENT_INDEX (GENERIC / ORG_MEETING_MINUTES profiles)
 │   ├── provisioning/
 │   │   └── create_project.py           # CLI wrapper for CREATE_PROJECT
