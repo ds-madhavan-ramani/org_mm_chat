@@ -1,7 +1,7 @@
 import sys
 import os
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "python"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
 
 import streamlit as st
 from snowflake_session import get_session
