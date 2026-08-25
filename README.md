@@ -201,18 +201,19 @@ than through OCR — see `python/ingestion/xlsx_parser.py`.
 - **A shared compute pool can silently block startup** if it's already at
   `max_nodes`. Check `SHOW COMPUTE POOLS` before assuming a container-runtime
   deploy will work.
-- **`st.experimental_user` is gone** in current Streamlit — the New Project
-  page uses `st.user` (with a fallback) to read the requesting user's email.
-- **The warehouse-runtime Streamlit version is controlled by the platform,
-  not by `environment.yml`/`pyproject.toml`** — this account's runtime
-  predates `st.page_link()` (added in Streamlit 1.31), which raised
-  `StreamlitAPIException: page_link() is not a valid Streamlit command`
-  even though nothing in our own dependency pins looked wrong. `app.py`'s
-  sidebar no longer calls `st.page_link` — Streamlit's automatic `pages/`
-  navigation (the sidebar page list shown by default) already provides
-  working links without it. If a future change wants an explicit page
-  link again, confirm the platform's actual Streamlit version first rather
-  than assuming what's pinned in the manifests applies.
+- **Warehouse runtime defaults to a very old Streamlit version
+  (1.22.0 on this account) unless `environment.yml` pins one explicitly** —
+  nothing about our other dependency pins (`pyproject.toml`,
+  `requirements.txt`) affects warehouse runtime at all; those only apply
+  under container runtime. The unpinned default broke two things: `st.page_link()`
+  (added 1.31 — raised `StreamlitAPIException: page_link() is not a valid
+  Streamlit command`; fixed by removing those calls, since Streamlit's
+  automatic `pages/` sidebar navigation already covers the same thing) and
+  `st.chat_input()`/`st.file_uploader()` (1.22 predates `chat_input`
+  entirely, and its own `file_uploader` explicitly errors asking for
+  ≥1.26.0). Fixed by adding `streamlit=1.32.3` to `environment.yml`'s
+  dependencies — pin the version explicitly rather than assuming any
+  particular default.
 
 ## Removing the project
 
@@ -231,8 +232,11 @@ here is hardcoded to meeting minutes except the `ORG_MEETING_MINUTES`
 segmentation profile and the values in the provisioning notebook. The same
 `MEDSOCMS.APP_CATALOG` catalog this project lives in could host additional,
 unrelated projects (each gets its own isolated data schema, stage, and
-Streamlit app — see `streamlit/pages/4_New_Project.py`), but this
-deployment's day-to-day purpose is `ORG_MM_CHAT`.
+Streamlit app via the `CREATE_PROJECT` procedure — see
+`python/provisioning/create_project.py` or call it directly from SQL), but
+this deployment is dedicated to `ORG_MM_CHAT` and provisioning a project
+isn't exposed in the app's UI — it's an admin/notebook operation, done
+once.
 
 ```
 project-llm-wiki/
@@ -265,8 +269,7 @@ project-llm-wiki/
 │   └── pages/
 │       ├── 1_Chat.py
 │       ├── 2_Data_Sources.py
-│       ├── 3_Sync_Status.py
-│       └── 4_New_Project.py            # only needed to provision a project other than ORG_MM_CHAT
+│       └── 3_Sync_Status.py
 └── pipeline/
     └── 00_provision_project.ipynb      # connect, catalog setup, create ORG_MM_CHAT, deploy
 ```

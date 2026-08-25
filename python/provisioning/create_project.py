@@ -1,7 +1,8 @@
 """
 provisioning/create_project.py — thin CLI wrapper around the CREATE_PROJECT
-stored procedure (sql/00_setup_catalog.sql). Used by the setup notebook and
-by the Streamlit "New Project" page.
+stored procedure (sql/00_setup_catalog.sql). Used by the setup notebook.
+(Not exposed in the Streamlit app itself — this deployment is dedicated to
+the ORG_MM_CHAT project, provisioned once via the notebook.)
 
     python provisioning/create_project.py \\
         --code CONTRACT_ANALYSIS \\

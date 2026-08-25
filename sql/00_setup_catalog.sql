@@ -96,8 +96,9 @@ CREATE TABLE IF NOT EXISTS PROJECT_QUERY_LOG (
 --   2. Creates MEDSOCMS.DATA_<CODE> schema
 --   3. Creates that schema's RAW_DOCUMENTS / DOCUMENT_INDEX tables + stage
 --   4. Inserts the PROJECTS catalog row
--- Callable from SQL, from python/provisioning/create_project.py, or from the
--- Streamlit "New Project" page.
+-- Callable from SQL directly, or from python/provisioning/create_project.py.
+-- (Not exposed in the Streamlit app itself — this deployment is dedicated
+-- to the ORG_MM_CHAT project, provisioned once via the notebook.)
 -- ----------------------------------------------------------------------------
 CREATE OR REPLACE PROCEDURE CREATE_PROJECT(
     PROJECT_CODE             VARCHAR,
