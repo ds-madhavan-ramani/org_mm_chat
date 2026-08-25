@@ -145,6 +145,14 @@ than through OCR — see `python/ingestion/xlsx_parser.py`.
   default warehouse runtime.
 - **`ROOT_LOCATION` is retired on some accounts** — the deploy cell uses
   `FROM '@<stage>'`, not the legacy `ROOT_LOCATION`.
+- **`RUNTIME_NAME` must be set explicitly, even on warehouse runtime** —
+  leaving it unset and relying on the implicit default produced `Python
+  Interpreter Error: TypeError: bad argument type for built-in operation`
+  at app load. Found by deploying a throwaway `MINIMAL_TEST_APP`, comparing
+  its `DESCRIBE STREAMLIT` output against a known-working warehouse-runtime
+  app, and confirming the fix by explicitly setting
+  `RUNTIME_NAME = 'SYSTEM$WAREHOUSE_RUNTIME'`. The deploy cell now sets this
+  on every `CREATE STREAMLIT`, not just the container-runtime branch.
 - **Stage exactly one dependency manifest** (`environment.yml` *or*
   `pyproject.toml`, matching the runtime) — staging both is ambiguous and
   can make Snowflake attempt PyPI resolution even on warehouse runtime.
