@@ -4,7 +4,12 @@ requires-python = ">= 3.11"
 version = "0.0.1"
 description = ""
 dependencies = [
-    "streamlit[snowflake]>=1.32.3",
+    # Container runtime's minimum supported Streamlit version is 1.50 —
+    # warehouse runtime is capped at whatever Snowflake's Conda channel
+    # offers for this account (1.22.0, confirmed not overridable via
+    # environment.yml), which is why this project moved to container
+    # runtime at all. No upper pin: any 1.50+ patch is fine.
+    "streamlit[snowflake]>=1.50.0",
     "requests",
     "pandas",
 ]
