@@ -30,7 +30,6 @@ if not projects:
         "(left sidebar) to create your first one — it only needs a name; "
         "you can add documents afterwards from the Data Sources page."
     )
-    st.page_link("pages/4_New_Project.py", label="➕ Create a project", icon="➕")
     st.stop()
 
 project_labels = {f"{p['PROJECT_NAME']} ({p['PROJECT_CODE']})": p["PROJECT_CODE"] for p in projects}
@@ -41,10 +40,6 @@ st.session_state["project_code"] = selected_code
 st.session_state["project"] = load_project(session, selected_code)
 
 st.sidebar.divider()
-st.sidebar.page_link("pages/1_Chat.py", label="💬 Chat")
-st.sidebar.page_link("pages/2_Data_Sources.py", label="📁 Data Sources")
-st.sidebar.page_link("pages/3_Sync_Status.py", label="📊 Sync Status")
-st.sidebar.page_link("pages/4_New_Project.py", label="➕ New Project")
 
 st.title(f"📚 {st.session_state['project'].project_name}")
 if st.session_state["project"].description:

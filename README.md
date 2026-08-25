@@ -203,6 +203,16 @@ than through OCR — see `python/ingestion/xlsx_parser.py`.
   deploy will work.
 - **`st.experimental_user` is gone** in current Streamlit — the New Project
   page uses `st.user` (with a fallback) to read the requesting user's email.
+- **The warehouse-runtime Streamlit version is controlled by the platform,
+  not by `environment.yml`/`pyproject.toml`** — this account's runtime
+  predates `st.page_link()` (added in Streamlit 1.31), which raised
+  `StreamlitAPIException: page_link() is not a valid Streamlit command`
+  even though nothing in our own dependency pins looked wrong. `app.py`'s
+  sidebar no longer calls `st.page_link` — Streamlit's automatic `pages/`
+  navigation (the sidebar page list shown by default) already provides
+  working links without it. If a future change wants an explicit page
+  link again, confirm the platform's actual Streamlit version first rather
+  than assuming what's pinned in the manifests applies.
 
 ## Removing the project
 
