@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import List
 
 from config import ProjectConfig, MIN_PARSED_TEXT_CHARS
+from ingestion.xlsx_parser import is_xlsx, parse_xlsx_to_text
 from utils.logging_utils import get_logger, log_event
 from utils.sql_utils import SQLBuilder
 
@@ -46,12 +47,15 @@ def ingest_uploaded_files(session, project: ProjectConfig, uploaded_files: List)
                 _to_stream(raw_bytes), stage_path, auto_compress=False, overwrite=True
             )
 
-            parsed = session.sql(
-                "SELECT AI_PARSE_DOCUMENT(BUILD_SCOPED_FILE_URL(?, ?), "
-                "PARSE_JSON('{\"mode\": \"OCR\"}')) AS RESULT",
-                params=[stage, f.name],
-            ).collect()
-            raw_text = _extract_text(parsed[0]["RESULT"])
+            if is_xlsx(f.name):
+                raw_text = parse_xlsx_to_text(raw_bytes)
+            else:
+                parsed = session.sql(
+                    "SELECT AI_PARSE_DOCUMENT(BUILD_SCOPED_FILE_URL(?, ?), "
+                    "PARSE_JSON('{\"mode\": \"OCR\"}')) AS RESULT",
+                    params=[stage, f.name],
+                ).collect()
+                raw_text = _extract_text(parsed[0]["RESULT"])
 
             if len(raw_text.strip()) < MIN_PARSED_TEXT_CHARS:
                 results.append(IngestResult(f.name, "FAILED",

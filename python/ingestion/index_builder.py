@@ -42,6 +42,33 @@ DOCUMENT TEXT:
     # and set PROJECTS.SEGMENTATION_PROFILE to match. Keeping the OCMS minutes
     # variant out of the template on purpose — it belongs to that project's
     # config row, not to shared code.
+
+    "ORG_MEETING_MINUTES": """You are indexing a set of OCMS Review Group
+(ORG) meeting minutes into a navigable tree structure. The source text may
+come from a Word/PDF minutes document (prose, headed sections) or from a
+serialized spreadsheet (lines beginning "=== Sheet: <name> ===" followed by
+"Column: value | Column: value" rows — each such block is one register of
+minutes, often one sheet per lease year or per meeting).
+
+Segment by meeting where the text allows it — one section per distinct
+meeting date, or one section per "=== Sheet: ... ===" block for spreadsheet
+input. Each section's summary should call out the meeting date, attendees if
+listed, and the key agenda items, decisions, and action items raised — the
+details a reader would search for later. Do not force sections that don't
+exist in the text; if the document has no clear per-meeting breaks, fall
+back to its natural headings/topic breaks instead.
+
+Return ONLY valid JSON in this shape, no commentary:
+{{
+  "document_summary": "2-3 sentence summary of the whole document (date range covered, overall purpose)",
+  "sections": [
+    {{"title": "e.g. 'Meeting — 12 Mar 2024' or a sheet/topic name", "summary": "...", "start": 0, "end": 1234}}
+  ]
+}}
+
+DOCUMENT TEXT:
+{text}
+""",
 }
 
 

@@ -34,10 +34,20 @@ if submitted:
         st.error("Project code and display name are required.")
     else:
         try:
+            # st.experimental_user was renamed to st.user in Streamlit 1.4x+
+            # (this app pins streamlit[snowflake]>=1.54.0, where the
+            # experimental name is gone) — try the current API first.
+            if hasattr(st, "user"):
+                created_by = getattr(st.user, "email", "") or ""
+            elif hasattr(st, "experimental_user"):
+                created_by = getattr(st.experimental_user, "email", "") or ""
+            else:
+                created_by = ""
+
             result = session.sql(
-                "CALL CREATE_PROJECT(?, ?, ?, ?, ?, ?)",
+                "CALL CREATE_PROJECT(?, ?, ?, ?, ?, ?, ?, ?)",
                 params=[code, name, description, sharepoint_site, sharepoint_folder,
-                        st.experimental_user.email if hasattr(st, "experimental_user") else ""],
+                        created_by, "", ""],
             ).collect()
             st.success(result[0][0])
             st.info("Reload the app (or reselect from the sidebar) to see the new project.")

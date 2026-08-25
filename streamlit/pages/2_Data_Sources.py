@@ -31,7 +31,8 @@ tab_upload, tab_sharepoint, tab_index = st.tabs(["📤 Upload Files", "🔗 Shar
 with tab_upload:
     st.subheader("Upload files")
     uploaded = st.file_uploader(
-        "Choose files (PDF, DOCX, TXT)", type=["pdf", "docx", "txt"], accept_multiple_files=True
+        "Choose files (PDF, DOCX, TXT, XLSX)", type=["pdf", "docx", "txt", "xlsx", "xlsm"],
+        accept_multiple_files=True
     )
     if uploaded and st.button("Ingest uploaded files", type="primary"):
         with st.spinner(f"Ingesting {len(uploaded)} file(s)…"):
