@@ -26,9 +26,9 @@ if not projects:
     st.sidebar.warning("No projects exist yet.")
     st.title("Welcome to LLM Wiki")
     st.write(
-        "No projects have been created yet. Use the **New Project** page "
-        "(left sidebar) to create your first one — it only needs a name; "
-        "you can add documents afterwards from the Data Sources page."
+        "No projects have been created yet. This deployment is provisioned "
+        "for the ORG_MM_CHAT project via `pipeline/00_provision_project.ipynb` "
+        "— run that notebook's project-creation step, then reload this app."
     )
     st.stop()
 

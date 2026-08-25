@@ -2,5 +2,10 @@ name: app_environment
 channels:
   - snowflake
 dependencies:
+  # Warehouse runtime otherwise defaults to Streamlit 1.22.0 on this
+  # account (confirmed by the exact version named in a runtime error:
+  # "st.file_uploader is unsupported in Streamlit 1.22.0") — old enough
+  # that st.chat_input (added 1.24) doesn't exist at all. Pin explicitly.
+  - streamlit=1.32.3
   - requests
   - pandas
