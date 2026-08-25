@@ -1,237 +1,226 @@
-# project-llm-wiki
+# ORG MM Chat
 
-A reusable template for spinning up a vectorless, hierarchical-retrieval
-LLM Wiki on Snowflake Cortex. Each project gets its own isolated data
-schema, its own Streamlit app, and its own choice of compute — adaptable to
-any project's document set in minutes, without forking code.
+**ORG MM Chat** is an LLM Wiki chatbot for querying the OCMS Review Group
+(ORG) meeting minutes across every lease year. It's built on
+[project-llm-wiki](https://github.com/ds-madhavan-ramani/project-llm-wiki), a
+reusable multi-project LLM Wiki template for Snowflake Cortex, and is the
+first real project provisioned from it — `PROJECT_CODE = 'ORG_MM_CHAT'` in
+the shared catalog.
 
-This repo is a standalone master: every deployment is created from it the
-same way, by registering a new project in the shared catalog and deploying
-that project's own app. There is no example project baked into the
-template — the catalog starts empty until you create your first one.
+## What it does
 
-## What is an LLM Wiki, and why not just RAG?
+- **Source of truth**: `BIS_ORG_Meeting_Minutes.xlsx` workbooks maintained on
+  SharePoint, under **BIS > Clause 6.6(d) OCMS Review Group Minutes**
+  ([folder link](https://metrotrains.sharepoint.com/:f:/s/cabinet-mr4/IgB1xW6fxABYQqW7zhSCst56AR9xCdADTTa_g7N6grpMMto?e=gK4PdO)).
+  One workbook can cover a single lease year or several sheets (e.g. one
+  sheet per year) — the ingestion path handles either.
+- **Ingestion**: pulled from SharePoint via the Microsoft Graph API (or
+  uploaded directly), on demand from the app itself — no separate sync job
+  to run first.
+- **Retrieval**: not vector-chunked RAG. Each document is indexed into a
+  navigable tree (document → meeting/section, with LLM-generated summaries),
+  and questions are answered by having the model traverse that tree —
+  answers cite the exact source file, the same way a person would find an
+  answer by skimming a table of contents rather than searching keyword
+  fragments.
+- **Chat UI**: Streamlit-in-Snowflake, with cited sources shown under every
+  answer and a cache layer so repeated questions don't re-run the full
+  search.
 
-An LLM Wiki is a retrieval approach built for document sets that already
-have real structure — meeting minutes, contracts, policy manuals — where a
-human could navigate a table of contents to find the right section. Instead
-of chunking every document and searching by embedding similarity (the
-standard vector-RAG approach), an LLM Wiki builds a hierarchical index —
-document → section → sub-section, each with an LLM-generated summary — and
-has the model *traverse* that tree to find the answer, the same way a person
-would skim a table of contents rather than search for keyword matches across
-shredded fragments. This trades some of RAG's flexibility on large,
-unstructured, fast-growing corpora for two things structured collections
-value more: answers that cite an exact section and date rather than a fuzzy
-chunk, and no risk of a chunk boundary splitting a fact in half. RAG remains
-the better fit for large or loosely structured evidence bases; this template
-is for the other case.
-
-## Configure this template for your environment
-
-Before creating any projects, decide and fix these once for your
-deployment:
-
-| Setting | Where it's set | Notes |
-|---|---|---|
-| Database | `sql/00_setup_catalog.sql`, `python/config.py` (`DATABASE`) | Not a shared constant across organizations or template instances — pick the Snowflake database this template's catalog and every project's data will live in, and use that same value consistently across the SQL/Python files. The rest of this README uses `<DATABASE>` as a placeholder for whatever you choose. |
-| Role | `sql/00_setup_catalog.sql`, `python/config.py` (`ROLE`) | The role that owns the catalog and every project schema. |
-| Default query warehouse | `python/config.py` (`WAREHOUSE_NAME`) | Only a fallback — see below, it's overridable per project. |
-
-## Infra shared by every project within one deployment of this template
-
-Once you've fixed `<DATABASE>` and `ROLE` above, these live inside that
-single database and are genuinely shared across every project you create
-from this template — not shared across unrelated deployments or other
-organizations' use of this same template.
-
-Graph API app registration (`GRAPH_API_SECRET`, `GRAPH_API_NETWORK_RULE`,
-`GRAPH_API_ACCESS_INTEGRATION`) and, if any project uses container runtime,
-the PyPI External Access Integration (`PYPI_NETWORK_RULE`,
-`PYPI_ACCESS_INTEGRATION`) are also shared within a deployment — created
-once, not per project (see `sql/test_graph_connectivity.sql` and notebook
-Step 1b).
-
-## What's shared vs. what's unique per project
-
-| Resource | Scope | Where it's set |
-|---|---|---|
-| `<DATABASE>.APP_CATALOG` schema | Shared, one-time per deployment | `sql/00_setup_catalog.sql` |
-| `PROJECTS` / `PROJECT_SYNC_LOG` / `PROJECT_QUERY_LOG` tables | Shared, one-time per deployment | `sql/00_setup_catalog.sql` |
-| Graph API integration (SharePoint) | Shared, one-time per deployment | created outside this repo; see `sql/test_graph_connectivity.sql` |
-| PyPI integration (container runtime only) | Shared, one-time per deployment | notebook Step 1b |
-| Data schema `<DATABASE>.DATA_<CODE>` | **Unique per project** | auto-created by `CREATE_PROJECT` |
-| Data stage `DOCS_STAGE` (inside that schema) | **Unique per project** | auto-created by `CREATE_PROJECT` |
-| `RAW_DOCUMENTS` / `DOCUMENT_INDEX` tables | **Unique per project** (live in that project's own schema) | auto-created by `CREATE_PROJECT` |
-| Streamlit deploy stage `<CODE>_APP_STAGE` | **Unique per project** | auto-created by `CREATE_PROJECT` |
-| Streamlit app object `<CODE>_APP` | **Unique per project** | deployed by notebook Step 3 |
-| Query warehouse | **Configurable per project** | `PROJECTS.QUERY_WAREHOUSE` |
-| Compute pool (or none, for warehouse runtime) | **Configurable per project** | `PROJECTS.COMPUTE_POOL` |
-| Model, chunk sizes, cache TTL, segmentation profile | **Configurable per project** | `PROJECTS` row |
-
-Nothing about a new project touches another project's schema, stage, app,
-warehouse, or compute pool unless you deliberately point two projects at the
-same one.
-
-## Architecture
+## How it works
 
 ```
-                          <DATABASE>.APP_CATALOG
-        (PROJECTS, PROJECT_SYNC_LOG, PROJECT_QUERY_LOG — shared, one-time)
-                                  │
-        ┌─────────────────────────┼─────────────────────────┐
-        ▼                         ▼                         ▼
-  Project: PROJECT_A         Project: PROJECT_B          Project: <NEW>
-  ─────────────────────      ─────────────────────       ─────────────────
-  DATA_PROJECT_A schema      DATA_PROJECT_B schema        DATA_<NEW> schema
-    RAW_DOCUMENTS              RAW_DOCUMENTS                 RAW_DOCUMENTS
-    DOCUMENT_INDEX             DOCUMENT_INDEX                DOCUMENT_INDEX
-  PROJECT_A_APP_STAGE        PROJECT_B_APP_STAGE          <NEW>_APP_STAGE
-  PROJECT_A_APP              PROJECT_B_APP                <NEW>_APP
-  (its own warehouse/pool)   (its own warehouse/pool)     (its own warehouse/pool)
+SharePoint (Clause 6.6(d) OCMS Review Group Minutes)
+        │  Microsoft Graph API
+        ▼
+RAW_DOCUMENTS  (MEDSOCMS.DATA_ORG_MM_CHAT)
+   .xlsx → parsed natively (pandas/openpyxl), NOT AI_PARSE_DOCUMENT —
+           spreadsheets are structured data, not scanned pages
+   .pdf/.docx/.txt → AI_PARSE_DOCUMENT (OCR)
+        │  index_builder.py (ORG_MEETING_MINUTES segmentation profile)
+        ▼
+DOCUMENT_INDEX  — one section per meeting date / per sheet, each with an
+                  LLM summary (attendees, agenda items, decisions, actions)
+        │  query_engine.py — 3-stage tree search
+        │  (doc summaries → section summaries → excerpt synthesis, via
+        │   Snowflake Cortex AI_COMPLETE)
+        ▼
+Chat answer, with cited source file names
 ```
 
-Each `<CODE>_APP` is a full copy of this template's `streamlit/` + `python/`
-code, deployed independently — same app logic everywhere, isolated data and
-compute per project.
+## Project configuration
 
-## Setup (one-time, before the first project)
+| Setting | Value |
+|---|---|
+| Project code | `ORG_MM_CHAT` |
+| Display name | ORG - Meeting Minutes - Chat |
+| Data schema | `MEDSOCMS.DATA_ORG_MM_CHAT` |
+| Streamlit app | `MEDSOCMS.APP_CATALOG.ORG_MM_CHAT_APP` |
+| SharePoint site | `https://metrotrains.sharepoint.com/sites/cabinet-mr4` |
+| SharePoint default folder | Clause 6.6(d) OCMS Review Group Minutes (link above) |
+| Segmentation profile | `ORG_MEETING_MINUTES` (per-meeting sections, not generic prose sectioning) |
+| Warehouse / runtime | `MTMWH02`, warehouse runtime (no compute pool) |
 
-1. Run `sql/00_setup_catalog.sql` — creates `<DATABASE>.APP_CATALOG` and the
-   `CREATE_PROJECT` / `TEARDOWN_PROJECT` procedures. (Notebook Step 1 does
-   this for you via `run_sql_file`.)
-2. Confirm Graph API connectivity: `sql/test_graph_connectivity.sql`.
-3. **Only if any project will use container runtime** (a compute pool
-   rather than a warehouse): run notebook Step 1b to create the shared PyPI
-   External Access Integration. Skip entirely if every project stays on
-   warehouse runtime.
+These are all set in `pipeline/00_provision_project.ipynb` Step 2 — you
+don't need to re-enter them, they're already parameterized for this project.
 
-## Deploying a new project
+## Prerequisites
 
-Everything below is `notebooks/00_provision_project.ipynb`, in order.
+1. Snowflake access to the `ADVANCEDANALYTICS` role, `MTMWH02` warehouse,
+   and `MEDSOCMS` database.
+2. A Microsoft Graph API app registration with `Sites.Selected` permission
+   granted on the `cabinet-mr4` SharePoint site, with:
+   - Tenant ID / Client ID available as `GRAPH_TENANT_ID` / `GRAPH_CLIENT_ID`
+     (environment variables the app reads at runtime)
+   - Client secret stored in the Snowflake secret
+     `MEDSOCMS.APP_CATALOG.GRAPH_API_SECRET`
+3. The shared Graph API network rule + External Access Integration
+   (`MEDSOCMS.APP_CATALOG.GRAPH_API_NETWORK_RULE`,
+   `GRAPH_API_ACCESS_INTEGRATION`) — tenant-level, created once for every
+   project in this catalog, not per-project.
 
-**Step 2 — create the project.** Set these values and run:
+Run `sql/test_graph_connectivity.sql` to confirm all three exist before
+deploying. If any come back empty, the `CREATE SECRET` / `CREATE NETWORK
+RULE` / `CREATE EXTERNAL ACCESS INTEGRATION` statements are commented at the
+bottom of that file (the integration needs `ACCOUNTADMIN`).
 
-```python
-PROJECT_CODE = 'CONTRACT_ANALYSIS'
-PROJECT_NAME = 'Contract Analysis LLM Wiki'
-DESCRIPTION = ''
-SHAREPOINT_SITE_URL = ''
-SHAREPOINT_DEFAULT_FOLDER = ''
-CREATED_BY = ''
-QUERY_WAREHOUSE = 'MTMWH02'   # or any other warehouse this project should run on
-COMPUTE_POOL = ''             # blank = warehouse runtime; set a pool name for container runtime
-```
+## Deploying / running
 
-This creates `<DATABASE>.DATA_CONTRACT_ANALYSIS` (schema, stage, tables), a
-dedicated deploy stage `<DATABASE>.APP_CATALOG.CONTRACT_ANALYSIS_APP_STAGE`,
-and registers the project row — including its own warehouse/compute pool
-choice. It does **not** touch any other project.
+Everything is `pipeline/00_provision_project.ipynb`, run top to bottom in
+Snowflake Notebooks:
 
-If you set `COMPUTE_POOL`, check it has spare capacity first:
+1. **Connect** — first code cell, always run.
+2. **Catalog setup** — creates `MEDSOCMS.APP_CATALOG` and the
+   `CREATE_PROJECT`/`TEARDOWN_PROJECT` procedures. Skip if it already exists.
+3. **Create the project** — creates `MEDSOCMS.DATA_ORG_MM_CHAT` (schema,
+   stage, tables) and registers `ORG_MM_CHAT` in the catalog with its
+   segmentation profile. Already parameterized; just run it. If the project
+   already exists it prints "already exists — skipping" and does nothing
+   further — safe to re-run.
+4. **Deploy the app** — stages `streamlit/` + `python/` onto the project's
+   own stage, stages the single matching dependency manifest
+   (`environment.yml`, since this project runs on warehouse runtime), and
+   runs `CREATE OR REPLACE STREAMLIT ... EXTERNAL_ACCESS_INTEGRATIONS =
+   (GRAPH_API_ACCESS_INTEGRATION)`. Safe to re-run any time you change app
+   code — fully idempotent.
+
+   *Ignore the leftover debug cells further down in the notebook*
+   (`MINIMAL_TEST_APP`, stray `ALTER`/`DESCRIBE STREAMLIT` statements) —
+   those are exploratory residue from earlier deployment debugging, not part
+   of the deploy path.
+
+5. Open the app: Snowsight → **Streamlit** → `ORG_MM_CHAT_APP`.
+
+## Adding / syncing meeting minutes
+
+From the app, **Data Sources** page:
+
+- **SharePoint Folder** tab — the folder URL is pre-filled with the Clause
+  6.6(d) OCMS Review Group Minutes folder. Click **List files**, tick the
+  `BIS_ORG_Meeting_Minutes.xlsx` file(s) you want, click **Ingest selected
+  files**. Already-ingested files are skipped automatically (deduped on the
+  SharePoint item ID).
+- **Upload Files** tab — for any file not in that SharePoint folder (drop
+  PDF/DOCX/TXT/XLSX directly).
+- **Index** tab — new documents are indexed automatically the first time;
+  use **Rebuild all** if the segmentation profile ever changes.
+
+`.xlsx`/`.xlsm` files are parsed natively (every sheet, row-by-row) rather
+than through OCR — see `python/ingestion/xlsx_parser.py`.
+
+## Using the chat
+
+- **Chat** — ask a question, get an answer with the source file(s) it was
+  drawn from shown under **Sources**; a ⚡ marks answers served from cache.
+- **Sync Status** — document/index counts and recent ingestion run history,
+  useful for confirming a SharePoint sync actually picked up new files.
+
+## Known account-level gotchas (Streamlit-in-Snowflake)
+
+- **External Access Integrations must be attached explicitly, on every
+  runtime** — not just container runtime. The deploy cell attaches
+  `GRAPH_API_ACCESS_INTEGRATION` unconditionally for exactly this reason:
+  without it, the SharePoint tab's outbound calls to
+  `login.microsoftonline.com`/`graph.microsoft.com` are blocked even on the
+  default warehouse runtime.
+- **`ROOT_LOCATION` is retired on some accounts** — the deploy cell uses
+  `FROM '@<stage>'`, not the legacy `ROOT_LOCATION`.
+- **`RUNTIME_NAME` must be set explicitly, even on warehouse runtime** —
+  leaving it unset and relying on the implicit default produced `Python
+  Interpreter Error: TypeError: bad argument type for built-in operation`
+  at app load. Found by deploying a throwaway `MINIMAL_TEST_APP`, comparing
+  its `DESCRIBE STREAMLIT` output against a known-working warehouse-runtime
+  app, and confirming the fix by explicitly setting
+  `RUNTIME_NAME = 'SYSTEM$WAREHOUSE_RUNTIME'`. The deploy cell now sets this
+  on every `CREATE STREAMLIT`, not just the container-runtime branch.
+- **Stage exactly one dependency manifest** (`environment.yml` *or*
+  `pyproject.toml`, matching the runtime) — staging both is ambiguous and
+  can make Snowflake attempt PyPI resolution even on warehouse runtime.
+- **Container runtime requires `CREATE COMPUTE POOL`/`CREATE EXTERNAL
+  ACCESS INTEGRATION` privileges** typically held by `SYSADMIN`/
+  `ACCOUNTADMIN`, not `ADVANCEDANALYTICS` by default. Not applicable to
+  `ORG_MM_CHAT` today (it runs on warehouse runtime), but relevant if this
+  project — or another one in the same catalog — ever moves to a compute
+  pool.
+- **A shared compute pool can silently block startup** if it's already at
+  `max_nodes`. Check `SHOW COMPUTE POOLS` before assuming a container-runtime
+  deploy will work.
+- **`st.experimental_user` is gone** in current Streamlit — the New Project
+  page uses `st.user` (with a fallback) to read the requesting user's email.
+
+## Removing the project
+
 ```sql
-SHOW COMPUTE POOLS;
-```
-Look at `active_nodes` vs `max_nodes` for the pool you're pointing at. A
-pool at capacity will fail to start your app with "the pool is unable to
-start your app" — this isn't a code issue, it's the pool being full. Prefer
-a dedicated pool per project over sharing one already used by another
-production app, to avoid contention with other teams' apps.
-
-**Step 3 — deploy the app.** Run as-is; it reads `QUERY_WAREHOUSE` and
-`COMPUTE_POOL` from the project row you just created, so this cell never
-needs manual edits per project:
-
-```python
-PROJECT_CODE = 'CONTRACT_ANALYSIS'  # the project to (re)deploy
-# ... cell reads the rest from the PROJECTS catalog row automatically
+CALL TEARDOWN_PROJECT('ORG_MM_CHAT', FALSE);  -- keep logs
+CALL TEARDOWN_PROJECT('ORG_MM_CHAT', TRUE);   -- purge logs too
 ```
 
-This stages `streamlit/` + `python/` onto the project's own deploy stage,
-stages both `environment.yml` and `pyproject.toml` at the stage root, and
-runs `CREATE OR REPLACE STREAMLIT ... FROM '@<project's stage>'`. If
-`COMPUTE_POOL` was set in Step 2, `RUNTIME_NAME`, `COMPUTE_POOL`, and
-`EXTERNAL_ACCESS_INTEGRATIONS = (PYPI_ACCESS_INTEGRATION)` are added
-automatically — nothing to configure by hand.
+Drops the `ORG_MM_CHAT_APP` Streamlit app, its deploy stage, and
+`MEDSOCMS.DATA_ORG_MM_CHAT`, and removes the catalog row.
 
-Re-run Step 3 (only) any time you change app code. It's fully idempotent —
-safe to re-run for any project without affecting others.
+## Under the hood: the multi-project template
 
-## Adding documents (no separate pipeline run required)
-
-Open the deployed app for a project → **Data Sources**:
-
-- **Upload Files** tab — drop PDFs/DOCX/TXT directly; ingested immediately.
-- **SharePoint Folder** tab — paste any folder URL, click **List files**,
-  tick the ones you want, click **Ingest selected files**.
-- **Index** tab — new documents are indexed automatically; use
-  **Rebuild all** after changing a project's segmentation profile.
-
-## File Structure
+The code in this repo is the generic `project-llm-wiki` engine — nothing
+here is hardcoded to meeting minutes except the `ORG_MEETING_MINUTES`
+segmentation profile and the values in the provisioning notebook. The same
+`MEDSOCMS.APP_CATALOG` catalog this project lives in could host additional,
+unrelated projects (each gets its own isolated data schema, stage, and
+Streamlit app — see `streamlit/pages/4_New_Project.py`), but this
+deployment's day-to-day purpose is `ORG_MM_CHAT`.
 
 ```
 project-llm-wiki/
 ├── sql/
-│   ├── 00_setup_catalog.sql            # APP_CATALOG + CREATE_PROJECT / TEARDOWN_PROJECT
+│   ├── 00_setup_catalog.sql            # APP_CATALOG + CREATE_PROJECT / TEARDOWN_PROJECT (shared, one-time)
 │   ├── 02_project_schema_template.sql  # reference copy of per-project data DDL
 │   └── test_graph_connectivity.sql
 ├── python/
 │   ├── config.py                       # infra constants + ProjectConfig loader
 │   ├── snowflake_session.py            # get_active_session() → st.connection() → external, in order
-│   ├── query_engine.py                 # generalized tree search + synthesis
+│   ├── query_engine.py                 # tree search + synthesis
 │   ├── ingestion/
 │   │   ├── file_ingest.py              # upload → RAW_DOCUMENTS
 │   │   ├── sharepoint_ingest.py        # SharePoint folder → RAW_DOCUMENTS
-│   │   └── index_builder.py            # RAW_DOCUMENTS → DOCUMENT_INDEX
+│   │   ├── xlsx_parser.py              # native xlsx/xlsm parsing (pandas/openpyxl)
+│   │   └── index_builder.py            # RAW_DOCUMENTS → DOCUMENT_INDEX (GENERIC / ORG_MEETING_MINUTES profiles)
 │   ├── provisioning/
 │   │   └── create_project.py           # CLI wrapper for CREATE_PROJECT
 │   └── utils/
 │       ├── cortex_client.py
 │       ├── graph_client.py             # generalized Graph API (any folder URL)
-│       ├── sql_utils.py                # parameterized SQLBuilder for ingestion writes
-│       ├── sql_script.py               # dollar-quote-aware .sql file splitter/runner
+│       ├── sql_utils.py
+│       ├── sql_script.py
 │       └── logging_utils.py
 ├── streamlit/
 │   ├── app.py                          # project selector
 │   ├── environment.yml                 # warehouse-runtime dependencies (conda)
 │   ├── pyproject.toml                  # container-runtime dependencies (pip/uv)
+│   ├── requirements.txt                # pip reference list (local dev / external session use)
 │   └── pages/
 │       ├── 1_Chat.py
 │       ├── 2_Data_Sources.py
 │       ├── 3_Sync_Status.py
-│       └── 4_New_Project.py            # creates the data schema + catalog row only —
-│                                        #   deploying that new project's app is still
-│                                        #   a notebook Step 3 run, since it needs local
-│                                        #   file access this repo checkout has and a
-│                                        #   running app doesn't.
-├── notebooks/
-│   └── 00_provision_project.ipynb      # Step 1 (catalog), 1b (PyPI EAI), 2 (create), 3 (deploy)
-├── requirements.txt
-└── README.md
+│       └── 4_New_Project.py            # only needed to provision a project other than ORG_MM_CHAT
+└── pipeline/
+    └── 00_provision_project.ipynb      # connect, catalog setup, create ORG_MM_CHAT, deploy
 ```
-
-## Removing a project
-
-```sql
-CALL TEARDOWN_PROJECT('CONTRACT_ANALYSIS', FALSE);  -- keep logs
-CALL TEARDOWN_PROJECT('CONTRACT_ANALYSIS', TRUE);   -- purge logs too
-```
-
-Drops that project's Streamlit app, its deploy stage, and its data schema
-(`<DATABASE>.DATA_CONTRACT_ANALYSIS`), and removes the catalog row. No other
-project is affected.
-
-## Known account-level gotchas worth checking before deploying a new project
-
-- **`ROOT_LOCATION` is retired on some accounts** — Step 3 already uses
-  `FROM`, not the legacy `ROOT_LOCATION`. If you ever hand-write a
-  `CREATE STREAMLIT` outside this notebook, use `FROM '@<stage>'` too.
-- **Container runtime requires `CREATE COMPUTE POOL` / `CREATE EXTERNAL
-  ACCESS INTEGRATION` privileges**, which `ADVANCEDANALYTICS` may not have
-  by default (these are typically `SYSADMIN`/`ACCOUNTADMIN`-owned). If Step
-  1b or a new `CREATE COMPUTE POOL` fails on permissions, that's a one-time
-  ask to whoever holds that role — not a code problem.
-- **A shared compute pool can silently block a new project's app from
-  starting** if it's already at `max_nodes` from other apps/projects. Check
-  `SHOW COMPUTE POOLS` before assuming a container-runtime deploy will work,
-  and prefer a dedicated pool per project unless you've confirmed headroom.
