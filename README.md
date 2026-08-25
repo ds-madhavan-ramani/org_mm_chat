@@ -98,12 +98,15 @@ Snowflake Notebooks:
    segmentation profile. Already parameterized; just run it. If the project
    already exists it prints "already exists — skipping" and does nothing
    further — safe to re-run.
-4. **Deploy the app** — stages `streamlit/` + `python/` onto the project's
-   own stage, stages the single matching dependency manifest
-   (`environment.yml`, since this project runs on warehouse runtime), and
-   runs `CREATE OR REPLACE STREAMLIT ... EXTERNAL_ACCESS_INTEGRATIONS =
-   (GRAPH_API_ACCESS_INTEGRATION)`. Safe to re-run any time you change app
-   code — fully idempotent.
+4. **Deploy the app** — stages `python/` onto the project's own stage
+   preserving its folder structure, stages `streamlit/`'s contents
+   **flattened to the stage root** (`streamlit/app.py` → `@stage/app.py`,
+   `streamlit/pages/1_Chat.py` → `@stage/pages/1_Chat.py` — see the
+   `MAIN_FILE` gotcha below for why), stages the single matching dependency
+   manifest (`environment.yml`, since this project runs on warehouse
+   runtime), and runs `CREATE OR REPLACE STREAMLIT ... MAIN_FILE = 'app.py'
+   ... EXTERNAL_ACCESS_INTEGRATIONS = (GRAPH_API_ACCESS_INTEGRATION)`. Safe
+   to re-run any time you change app code — fully idempotent.
 
    *Ignore the leftover debug cells further down in the notebook*
    (`MINIMAL_TEST_APP`, stray `ALTER`/`DESCRIBE STREAMLIT` statements) —
@@ -146,30 +149,46 @@ than through OCR — see `python/ingestion/xlsx_parser.py`.
   default warehouse runtime.
 - **`ROOT_LOCATION` is retired on some accounts** — the deploy cell uses
   `FROM '@<stage>'`, not the legacy `ROOT_LOCATION`.
-- **`RUNTIME_NAME` must be set explicitly, even on warehouse runtime** —
-  leaving it unset and relying on the implicit default produced `Python
-  Interpreter Error: TypeError: bad argument type for built-in operation`
-  at app load. Found by deploying a throwaway `MINIMAL_TEST_APP`, comparing
-  its `DESCRIBE STREAMLIT` output against a known-working warehouse-runtime
-  app, and confirming the fix by explicitly setting
-  `RUNTIME_NAME = 'SYSTEM$WAREHOUSE_RUNTIME'`. The deploy cell now sets this
-  on every `CREATE STREAMLIT`, not just the container-runtime branch.
-- **The same generic `TypeError: bad argument type for built-in operation`
-  can also come from an unresolvable `environment.yml` package** — it's not
-  a diagnostic message, just whatever Snowflake's sandbox bootstrap throws
-  when it can't stand up the app's Python environment, and that happens
-  *before* any of the app's own code runs. Adding `openpyxl` to
-  `environment.yml` (for xlsx ingestion) reproduced this exact error,
-  confirmed by importing every app dependency module-by-module from inside
-  a Notebook cell (same account/warehouse) — `openpyxl` was the one import
-  that failed (`ModuleNotFoundError`), meaning it isn't resolvable from this
-  account's Anaconda channel snapshot for warehouse-runtime Streamlit apps.
-  Fix: `python/ingestion/xlsx_parser.py` now reads `.xlsx` with only the
-  Python standard library (`zipfile` + `xml.etree.ElementTree` — an `.xlsx`
-  is just a zip of XML parts), so there's no longer a package to fail to
-  resolve. If a future dependency addition breaks app load the same way,
-  re-run the module-by-module import test to find the culprit rather than
-  guessing from the error message.
+- **A nested `MAIN_FILE` (e.g. `MAIN_FILE = 'streamlit/app.py'`) reliably
+  fails to load on this account** with `Python Interpreter Error: TypeError:
+  bad argument type for built-in operation` at bootstrap — before a single
+  line of the app's own code runs, and regardless of what that code is.
+  Confirmed by isolating the variable directly: a trivial `st.write(...)`
+  app with no imports, no `pages/` folder, deployed with `MAIN_FILE` in a
+  subfolder, failed identically to the real app; the exact same content at
+  the stage root worked. `__file__`/`os.path.dirname(__file__)` were
+  separately confirmed to behave normally (`/tmp/appRoot/...`) and are not
+  the cause. **Fix**: `MAIN_FILE` is `'app.py'`, not `'streamlit/app.py'` —
+  the deploy cell flattens `streamlit/`'s contents to the stage root
+  instead of preserving its folder name (`python/` keeps its own folder
+  structure since it's imported via `sys.path`, not used as `MAIN_FILE`).
+  If this ever needs re-diagnosing, isolate one variable at a time: a bare
+  `st.write` app is fastest for testing whether an app-load failure is
+  structural (stage layout / `MAIN_FILE`) vs. something in the app's own
+  code.
+- **The generic `TypeError: bad argument type for built-in operation` is
+  not a diagnostic message** — it's whatever Snowflake's sandbox bootstrap
+  throws on several unrelated failure modes (the nested-`MAIN_FILE` case
+  above; also reproduced by an unresolvable `environment.yml` package —
+  adding `openpyxl` for xlsx ingestion broke app load the same way, since
+  it isn't resolvable from this account's Anaconda channel snapshot for
+  warehouse-runtime Streamlit apps; fixed by rewriting
+  `python/ingestion/xlsx_parser.py` to use only the Python standard library
+  — `zipfile` + `xml.etree.ElementTree`, since an `.xlsx` is just a zip of
+  XML parts). Don't guess from the message alone: import every app
+  dependency module-by-module from a Notebook cell to rule out a bad
+  package, and bisect with a minimal `st.write` app at the stage root vs.
+  nested to rule out a structural/layout issue, before assuming it's
+  something in the app's actual logic.
+- **`RUNTIME_NAME` set explicitly on warehouse runtime is harmless but
+  was not the fix for the above** — an earlier pass through this bug set
+  `RUNTIME_NAME = 'SYSTEM$WAREHOUSE_RUNTIME'` explicitly on every
+  `CREATE STREAMLIT`, reasoning from a debug trail that had modified a
+  throwaway `MINIMAL_TEST_APP`. That trail's app was also nested-vs-flat at
+  different points, which likely explains why that fix looked plausible —
+  the real cause was the stage layout, not `RUNTIME_NAME`. Left in place as
+  an explicit default since it doesn't hurt, but don't expect it alone to
+  fix a similar error in the future.
 - **Stage exactly one dependency manifest** (`environment.yml` *or*
   `pyproject.toml`, matching the runtime) — staging both is ambiguous and
   can make Snowflake attempt PyPI resolution even on warehouse runtime.
