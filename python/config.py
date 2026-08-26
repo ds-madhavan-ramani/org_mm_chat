@@ -8,7 +8,6 @@ whichever project is active. Only true infra constants (shared across every
 project) stay as constants here.
 """
 
-import os
 from dataclasses import dataclass
 from typing import Optional
 
@@ -25,10 +24,13 @@ ROLE = "ADVANCEDANALYTICS"
 CATALOG_SCHEMA = "APP_CATALOG"
 
 # Graph API app registration — tenant-level, shared by every project's
-# SharePoint ingestion. Client secret is fetched from the Snowflake SECRET
-# object referenced in test_graph_connectivity.sql, never stored here.
-GRAPH_TENANT_ID = os.environ.get("GRAPH_TENANT_ID", "")
-GRAPH_CLIENT_ID = os.environ.get("GRAPH_CLIENT_ID", "")
+# SharePoint ingestion. Tenant ID / Client ID are not secret (Microsoft
+# treats both as public identifiers, visible on the app registration's
+# Overview page to any reader), so they're plain constants here, unlike
+# the client secret — which is fetched from the Snowflake SECRET object
+# referenced in test_graph_connectivity.sql and never stored in this repo.
+GRAPH_TENANT_ID = "23cc5cff-1cb6-4a63-9c82-97d2a2721787"
+GRAPH_CLIENT_ID = "8bc3d2b4-594a-4fd1-a9c8-bf6ef8db1caa"
 GRAPH_SECRET_NAME = f"{DATABASE}.{CATALOG_SCHEMA}.GRAPH_API_SECRET"
 
 # Model fallback if a project row doesn't specify one
