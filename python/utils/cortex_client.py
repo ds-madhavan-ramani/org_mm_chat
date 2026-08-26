@@ -67,13 +67,26 @@ def complete_json(session, model: str, prompt: str, max_tokens: int = 4096) -> d
     except json.JSONDecodeError as e:
         logger.error("EVENT=JSON_PARSE_ERROR response_preview=%r", raw[:500])
         raise CortexError(f"Cortex response was not valid JSON: {e}") from e
+
+    # Some models, asked to "return ONLY valid JSON", escape their entire
+    # answer as a JSON *string* instead of emitting the object directly —
+    # i.e. the response text is '"{\"document_summary\": ...}"' rather than
+    # '{"document_summary": ...}'. json.loads() on that yields a plain str
+    # (still valid JSON — a string is a valid top-level JSON value), which
+    # is itself the real JSON we want one level down. Unwrap up to twice
+    # before giving up, rather than failing on what's a known, systematic
+    # quirk of the model's output shape, not truly malformed data.
+    for _ in range(2):
+        if not isinstance(parsed, str):
+            break
+        try:
+            parsed = json.loads(parsed)
+        except json.JSONDecodeError:
+            break
+
     if not isinstance(parsed, dict):
-        # json.loads() happily parses a bare quoted string, number, or list
-        # as valid JSON — e.g. the model responding with a plain refusal
-        # message like "Unable to process this document" instead of the
-        # requested {...} object. Treat that the same as a parse failure
-        # rather than returning something callers' .get() calls will blow
-        # up on downstream with a much less clear AttributeError.
+        # Still not an object after unwrapping — a genuine non-JSON-object
+        # response (e.g. a plain refusal message), not just double-encoding.
         logger.error("EVENT=JSON_PARSE_ERROR response_preview=%r", raw[:500])
         raise CortexError(
             f"Cortex response was valid JSON but not a JSON object (got {type(parsed).__name__})"
