@@ -63,7 +63,19 @@ def complete_json(session, model: str, prompt: str, max_tokens: int = 4096) -> d
         if cleaned.lower().startswith("json"):
             cleaned = cleaned[4:]
     try:
-        return json.loads(cleaned)
+        parsed = json.loads(cleaned)
     except json.JSONDecodeError as e:
         logger.error("EVENT=JSON_PARSE_ERROR response_preview=%r", raw[:500])
         raise CortexError(f"Cortex response was not valid JSON: {e}") from e
+    if not isinstance(parsed, dict):
+        # json.loads() happily parses a bare quoted string, number, or list
+        # as valid JSON — e.g. the model responding with a plain refusal
+        # message like "Unable to process this document" instead of the
+        # requested {...} object. Treat that the same as a parse failure
+        # rather than returning something callers' .get() calls will blow
+        # up on downstream with a much less clear AttributeError.
+        logger.error("EVENT=JSON_PARSE_ERROR response_preview=%r", raw[:500])
+        raise CortexError(
+            f"Cortex response was valid JSON but not a JSON object (got {type(parsed).__name__})"
+        )
+    return parsed

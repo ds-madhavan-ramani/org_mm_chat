@@ -12,6 +12,7 @@ Callable from Streamlit (after ingest) or from a notebook/CLI for a manual
 rebuild.
 """
 
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 from config import ProjectConfig
@@ -19,6 +20,13 @@ from utils.cortex_client import complete_json
 from utils.logging_utils import get_logger, log_event
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class IndexResult:
+    indexed: int
+    failed: int
+    errors: List[str] = field(default_factory=list)  # "file_name: error message"
 
 PROMPTS = {
     "GENERIC": """You are indexing a document into a navigable tree structure.
@@ -74,10 +82,15 @@ DOCUMENT TEXT:
 
 def build_index_for_project(session, project: ProjectConfig,
                              doc_ids: Optional[List[int]] = None,
-                             rebuild: bool = False):
+                             rebuild: bool = False) -> IndexResult:
     """
     doc_ids=None -> index every document not yet in DOCUMENT_INDEX (or every
     document if rebuild=True).
+
+    Each document is indexed independently — one document's LLM response
+    coming back malformed (e.g. not the requested JSON shape) is recorded
+    as a per-document failure, not an exception that aborts every other
+    document still queued in the same call.
     """
     schema = project.qualified_schema
     prompt_template = PROMPTS.get(project.segmentation_profile, PROMPTS["GENERIC"])
@@ -100,11 +113,17 @@ def build_index_for_project(session, project: ProjectConfig,
         params=params,
     ).collect()
 
+    errors: List[str] = []
+    indexed = 0
     for doc in docs:
-        _index_one_document(session, project, doc["DOC_ID"], doc["FILE_NAME"],
-                             doc["RAW_TEXT"], prompt_template, rebuild)
+        try:
+            _index_one_document(session, project, doc["DOC_ID"], doc["FILE_NAME"],
+                                 doc["RAW_TEXT"], prompt_template, rebuild)
+            indexed += 1
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{doc['FILE_NAME']}: {e}")
 
-    return len(docs)
+    return IndexResult(indexed=indexed, failed=len(errors), errors=errors)
 
 
 def _index_one_document(session, project: ProjectConfig, doc_id: int, file_name: str,
