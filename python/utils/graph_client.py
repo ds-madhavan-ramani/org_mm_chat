@@ -184,16 +184,20 @@ def download_file(token: str, drive_id: str, item_id: str) -> bytes:
 
 def get_client_secret() -> str:
     """
-    Reads the tenant-level Graph API client secret.
+    Reads the tenant-level Graph API client secret, bound to this app under
+    the alias 'graph_secret' by the deploy cell's
+    SECRETS = ('graph_secret' = MEDSOCMS.APP_CATALOG.GRAPH_API_SECRET).
 
-    Snowflake secrets are only readable from Python code running inside an
-    object (Streamlit app / UDF / procedure) that has the secret bound via
-    its own SECRETS clause — SYSTEM$GET_SECRET_STRING as an ad-hoc SQL call
-    (the previous approach here) is not a supported access path and fails
-    with "Unknown function SYSTEM$GET_SECRET_STRING". The deploy cell binds
-    the secret under the local alias 'graph_secret'
-    (SECRETS = ('graph_secret' = MEDSOCMS.APP_CATALOG.GRAPH_API_SECRET));
-    read it via the _snowflake module instead.
+    Container runtime and warehouse runtime expose bound secrets through
+    different, mutually-exclusive APIs: container runtime has no
+    _snowflake module and exposes secrets via st.secrets instead, while
+    warehouse runtime is the reverse. Try st.secrets (container — what
+    this app actually runs on) first, falling back to _snowflake in case
+    warehouse runtime is ever revisited.
     """
-    import _snowflake
-    return _snowflake.get_generic_secret_string("graph_secret")
+    try:
+        import streamlit as st
+        return st.secrets["graph_secret"]
+    except Exception:
+        import _snowflake
+        return _snowflake.get_generic_secret_string("graph_secret")
