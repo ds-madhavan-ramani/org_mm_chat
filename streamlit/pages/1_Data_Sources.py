@@ -33,11 +33,16 @@ st.caption(
 def _reindex(session, project, results) -> int:
     """Indexes/re-indexes exactly the documents this run touched (new or
     changed) — a rebuild for those doc_ids specifically, not the whole
-    project, so an unrelated document's index isn't rebuilt on every run."""
+    project, so an unrelated document's index isn't rebuilt on every run.
+    Returns the indexed count; any per-document failures are shown inline
+    here rather than aborting the rest of the batch."""
     doc_ids = [r.doc_id for r in results if r.status in ("INGESTED", "UPDATED") and r.doc_id]
     if not doc_ids:
         return 0
-    return build_index_for_project(session, project, doc_ids=doc_ids, rebuild=True)
+    result = build_index_for_project(session, project, doc_ids=doc_ids, rebuild=True)
+    for err in result.errors:
+        st.error(f"⚠️ Indexing failed: {err}")
+    return result.indexed
 
 
 def _status_line(r) -> str:
@@ -208,10 +213,18 @@ with tab_index:
     with col1:
         if st.button("Index new/unindexed documents"):
             with st.spinner("Building index…"):
-                count = build_index_for_project(session, project, rebuild=False)
-            st.success(f"Indexed {count} document(s).")
+                result = build_index_for_project(session, project, rebuild=False)
+            st.success(f"Indexed {result.indexed} document(s).")
+            if result.failed:
+                st.error(f"{result.failed} document(s) failed to index:")
+                for err in result.errors:
+                    st.write(f"- {err}")
     with col2:
         if st.button("Rebuild all", type="secondary"):
             with st.spinner("Rebuilding full index…"):
-                count = build_index_for_project(session, project, rebuild=True)
-            st.success(f"Rebuilt index for {count} document(s).")
+                result = build_index_for_project(session, project, rebuild=True)
+            st.success(f"Rebuilt index for {result.indexed} document(s).")
+            if result.failed:
+                st.error(f"{result.failed} document(s) failed to index:")
+                for err in result.errors:
+                    st.write(f"- {err}")
