@@ -137,8 +137,13 @@ From the app, **Data Sources** page:
   checkbox above the list shows how many register entries matched an
   actual file and lets you turn this off in favor of a plain name filter
   (defaults to `minutes`) if you'd rather browse everything, or if no
-  register workbook is found in the folder at all. Tick what you want,
-  click **Ingest selected files**.
+  register workbook is found in the folder at all. A caption right below
+  "Found N file(s)" always states, in plain language, whether a
+  `BIS_ORG_Meeting_Minutes` workbook was found in *this* folder listing
+  and how many FileName values it yielded — the register can only be
+  read if it's located inside the folder being listed here, not
+  elsewhere on the site. Tick what you want, click **Ingest selected
+  files**.
   - A file whose content is unchanged since it was last ingested is
     skipped.
   - A file that's been **edited** in SharePoint since it was last ingested
