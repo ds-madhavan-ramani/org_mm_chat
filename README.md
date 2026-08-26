@@ -248,6 +248,36 @@ than through OCR — see `python/ingestion/xlsx_parser.py`.
     folder via the **SharePoint Folder** tab, which doesn't use
     `file_uploader` at all.
 
+  **Resolved**: this project has since moved to **container runtime** on
+  the shared `STREAMLIT_COMPUTE_POOL_OCMS_BUSPERF` compute pool
+  (`PROJECTS.COMPUTE_POOL` set accordingly — see the project-creation
+  cell in the notebook), which gets a real, controllable Streamlit
+  version (`streamlit[snowflake]==1.50.0`, pinned as an exact version in
+  `pyproject.toml`/`requirements.txt`/`environment.yml` — a floor like
+  `>=1.50.0` is unnecessary now that an exact working version is known,
+  and avoids any resolver ambiguity). This needed two things warehouse
+  runtime didn't: the `PYPI_ACCESS_INTEGRATION` external access
+  integration (already existed on this account) with `USAGE` granted to
+  `ADVANCEDANALYTICS`, and `USAGE`/`MONITOR` on the compute pool — both
+  are `ACCOUNTADMIN`-only grants that `SYSADMIN` could not make on this
+  account, confirmed by testing directly. The `st.chat_input`/
+  `st.chat_message` fallback logic in `Chat.py` is left in place — it's
+  harmless on a modern Streamlit version (the `hasattr` checks just take
+  the native path) and is cheap insurance if this project ever has to
+  fall back to warehouse runtime again.
+- **`SYSTEM$GET_SECRET_STRING` as an ad-hoc SQL call fails with "Unknown
+  function"** — it's only usable from inside an object (Streamlit app /
+  UDF / procedure) that has the secret bound via a `SECRETS` clause on its
+  own `CREATE`/`ALTER` statement, not as a plain `session.sql(...)` call
+  from application code. This broke the SharePoint tab's "List files"
+  entirely (`graph_client.py`'s `get_client_secret()` used the ad-hoc
+  form). Fixed by adding `SECRETS = ('graph_secret' =
+  MEDSOCMS.APP_CATALOG.GRAPH_API_SECRET)` to the deploy cell's `CREATE
+  STREAMLIT` statement (both runtime branches) and reading the secret via
+  `_snowflake.get_generic_secret_string("graph_secret")` in Python
+  instead — the correct access path for a secret bound to a Streamlit
+  app/UDF/procedure via `EXTERNAL_ACCESS_INTEGRATIONS` + `SECRETS`.
+
 ## Removing the project
 
 ```sql

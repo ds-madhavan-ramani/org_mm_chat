@@ -42,7 +42,7 @@ class IngestResult:
 def list_sharepoint_folder(session, folder_url: str) -> List[graph_client.DriveItem]:
     """Resolves a pasted SharePoint folder URL and lists its files, recursively."""
     token = graph_client._get_access_token(
-        GRAPH_TENANT_ID, GRAPH_CLIENT_ID, graph_client.get_client_secret(session)
+        GRAPH_TENANT_ID, GRAPH_CLIENT_ID, graph_client.get_client_secret()
     )
     root = graph_client.resolve_folder(token, folder_url)
     if not root.is_folder:
@@ -58,7 +58,7 @@ def list_sharepoint_folder(session, folder_url: str) -> List[graph_client.DriveI
 def ingest_selected_files(session, project: ProjectConfig, folder_url: str,
                           selected_items: List[graph_client.DriveItem]) -> List[IngestResult]:
     token = graph_client._get_access_token(
-        GRAPH_TENANT_ID, GRAPH_CLIENT_ID, graph_client.get_client_secret(session)
+        GRAPH_TENANT_ID, GRAPH_CLIENT_ID, graph_client.get_client_secret()
     )
     drive_id = _get_drive_id(token, folder_url)
 
