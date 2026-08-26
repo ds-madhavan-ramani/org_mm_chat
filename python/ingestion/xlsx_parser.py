@@ -38,6 +38,14 @@ def is_xlsx(file_name: str) -> bool:
     return file_name.lower().endswith(XLSX_EXTENSIONS)
 
 
+def normalize_token(s: str) -> str:
+    """Lowercases and strips everything but letters/digits, so 'File Name',
+    'File_Name', 'FILE-NAME' and 'filename' all compare equal — used for
+    matching both column headers and register/actual file names, which are
+    typed inconsistently across a workbook maintained by hand."""
+    return "".join(ch for ch in s.lower() if ch.isalnum())
+
+
 def _col_index(cell_ref: str) -> int:
     """'C7' -> 2 (0-based column index)."""
     letters = "".join(ch for ch in cell_ref if ch.isalpha())
@@ -150,3 +158,30 @@ def parse_xlsx_to_text(raw_bytes: bytes) -> str:
                     parts.append(" | ".join(cells))
             parts.append("")
     return "\n".join(parts)
+
+
+def extract_column_values(raw_bytes: bytes, header_names) -> List[str]:
+    """
+    Reads every sheet's row-1 header and returns every non-blank value found
+    under any column whose header matches one of header_names (compared via
+    normalize_token, so header spelling/spacing variance doesn't matter).
+    Unlike parse_xlsx_to_text (full-document serialization for indexing),
+    this reads one specific column out of a register/index workbook — e.g.
+    BIS_ORG_Meeting_Minutes.xlsx's FileName column, used to identify which
+    single file per meeting is the canonical version.
+    """
+    wanted = {normalize_token(h) for h in header_names}
+    values: List[str] = []
+    with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
+        shared = _load_shared_strings(zf)
+        for _, sheet_path in _load_sheets(zf).items():
+            rows = _parse_rows(zf, sheet_path, shared)
+            if not rows:
+                continue
+            header = rows[0]
+            col_idxs = [i for i, h in enumerate(header) if h and normalize_token(h) in wanted]
+            for row in rows[1:]:
+                for i in col_idxs:
+                    if i < len(row) and row[i]:
+                        values.append(row[i].strip())
+    return values

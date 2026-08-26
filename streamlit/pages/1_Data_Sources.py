@@ -6,7 +6,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
 import streamlit as st
 from snowflake_session import get_session
 from ingestion.file_ingest import ingest_uploaded_files
-from ingestion.sharepoint_ingest import list_sharepoint_folder, ingest_selected_files
+from ingestion.sharepoint_ingest import (
+    list_sharepoint_folder, ingest_selected_files, get_canonical_filenames, filename_match_keys,
+)
 from ingestion.index_builder import build_index_for_project
 
 st.set_page_config(page_title="Data Sources — LLM Wiki", page_icon="📁", layout="wide")
@@ -87,33 +89,64 @@ with tab_sharepoint:
     elif st.button("List files in folder"):
         with st.spinner("Listing folder from SharePoint…"):
             try:
-                st.session_state["sp_listing"] = list_sharepoint_folder(session, folder_url)
+                listing = list_sharepoint_folder(session, folder_url)
+                st.session_state["sp_listing"] = listing
                 st.session_state["sp_folder_url"] = folder_url
+                st.session_state["sp_canonical_names"] = get_canonical_filenames(
+                    session, folder_url, listing
+                )
             except Exception as e:  # noqa: BLE001
                 st.error(f"Couldn't list that folder: {e}")
                 st.session_state["sp_listing"] = None
+                st.session_state["sp_canonical_names"] = []
 
     listing = st.session_state.get("sp_listing")
+    canonical_names = st.session_state.get("sp_canonical_names") or []
     if listing:
         st.write(f"Found **{len(listing)}** file(s) in this folder.")
-        name_filter = st.text_input(
-            "Filter by file name",
-            value="minutes",
-            help='Matches this text anywhere in the file name (case-insensitive). '
-                 'Defaults to "minutes" so only actual meeting-minutes files show up '
-                 'below, out of everything in the folder (agendas, reports, etc). '
-                 'Clear it, or change it to something like "agenda", when you\'re '
-                 'ready to bring in other content.',
-        )
-        filtered = (
-            [item for item in listing if name_filter.strip().lower() in item.name.lower()]
-            if name_filter.strip() else listing
-        )
-        st.caption(f'Showing {len(filtered)} of {len(listing)} file(s) matching "{name_filter}".')
+
+        use_register = False
+        register_matches = []
+        if canonical_names:
+            register_keys = set()
+            for n in canonical_names:
+                register_keys |= filename_match_keys(n)
+            register_matches = [
+                item for item in listing if filename_match_keys(item.name) & register_keys
+            ]
+            use_register = st.checkbox(
+                f"Only show canonical files from BIS_ORG_Meeting_Minutes.xlsx's "
+                f"FileName column ({len(register_matches)} of {len(canonical_names)} "
+                f"register entries matched a file in this folder)",
+                value=True,
+                help="This register is maintained as the source of truth for which "
+                     "single version (Draft / Initial / Final / Updated / Revised, ...) "
+                     "is canonical per meeting. Uncheck to fall back to a plain name "
+                     "filter over every file in the folder instead.",
+            )
+
+        if canonical_names and use_register:
+            pool = register_matches
+        else:
+            name_filter = st.text_input(
+                "Filter by file name",
+                value="minutes",
+                help='Matches this text anywhere in the file name (case-insensitive). '
+                     'Defaults to "minutes" so only actual meeting-minutes files show up '
+                     'below, out of everything in the folder (agendas, reports, etc). '
+                     'Clear it, or change it to something like "agenda", when you\'re '
+                     'ready to bring in other content.',
+            )
+            pool = (
+                [item for item in listing if name_filter.strip().lower() in item.name.lower()]
+                if name_filter.strip() else listing
+            )
+            st.caption(f'Showing {len(pool)} of {len(listing)} file(s) matching "{name_filter}".')
+
         selected_names = st.multiselect(
             "Select files to ingest",
-            options=[item.name for item in filtered],
-            default=[item.name for item in filtered],
+            options=[item.name for item in pool],
+            default=[item.name for item in pool],
         )
         if st.button("Ingest selected files", type="primary"):
             selected_items = [i for i in listing if i.name in selected_names]

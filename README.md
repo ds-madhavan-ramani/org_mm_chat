@@ -126,12 +126,19 @@ From the app, **Data Sources** page:
   its raw URL; use the collapsed **"Use a different SharePoint folder
   instead"** expander only if you need to point at somewhere else for one
   run. Click **List files** — the folder holds 500+ items (agendas,
-  reports, minutes, ...), so the **file name filter** defaults to
-  `minutes`, narrowing both the shown options and the pre-ticked default
-  selection to just the ~90–100 actual meeting-minutes files. Widen or
-  clear that filter later to bring in other content (agendas, etc.) as
-  the project's scope grows. Tick what you want, click **Ingest selected
-  files**.
+  reports, minutes, and several draft/initial/final/updated/revised
+  versions per meeting), so by default the page uses
+  `BIS_ORG_Meeting_Minutes.xlsx`'s **FileName column as a register**:
+  whoever maintains that workbook has already resolved, per meeting,
+  which single file is the canonical one — the app downloads it, reads
+  that column (`extract_column_values` in `xlsx_parser.py`, matched
+  case/spacing-insensitively against the folder's actual file names via
+  `filename_match_keys`), and pre-ticks only those ~90–100 files. A
+  checkbox above the list shows how many register entries matched an
+  actual file and lets you turn this off in favor of a plain name filter
+  (defaults to `minutes`) if you'd rather browse everything, or if no
+  register workbook is found in the folder at all. Tick what you want,
+  click **Ingest selected files**.
   - A file whose content is unchanged since it was last ingested is
     skipped.
   - A file that's been **edited** in SharePoint since it was last ingested
