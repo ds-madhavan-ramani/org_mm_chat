@@ -95,11 +95,25 @@ with tab_sharepoint:
 
     listing = st.session_state.get("sp_listing")
     if listing:
-        st.write(f"Found **{len(listing)}** file(s):")
+        st.write(f"Found **{len(listing)}** file(s) in this folder.")
+        name_filter = st.text_input(
+            "Filter by file name",
+            value="minutes",
+            help='Matches this text anywhere in the file name (case-insensitive). '
+                 'Defaults to "minutes" so only actual meeting-minutes files show up '
+                 'below, out of everything in the folder (agendas, reports, etc). '
+                 'Clear it, or change it to something like "agenda", when you\'re '
+                 'ready to bring in other content.',
+        )
+        filtered = (
+            [item for item in listing if name_filter.strip().lower() in item.name.lower()]
+            if name_filter.strip() else listing
+        )
+        st.caption(f'Showing {len(filtered)} of {len(listing)} file(s) matching "{name_filter}".')
         selected_names = st.multiselect(
             "Select files to ingest",
-            options=[item.name for item in listing],
-            default=[item.name for item in listing],
+            options=[item.name for item in filtered],
+            default=[item.name for item in filtered],
         )
         if st.button("Ingest selected files", type="primary"):
             selected_items = [i for i in listing if i.name in selected_names]

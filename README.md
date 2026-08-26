@@ -125,8 +125,13 @@ From the app, **Data Sources** page:
   configured folder (Clause 6.6(d) OCMS Review Group Minutes) rather than
   its raw URL; use the collapsed **"Use a different SharePoint folder
   instead"** expander only if you need to point at somewhere else for one
-  run. Click **List files**, tick the `BIS_ORG_Meeting_Minutes.xlsx`
-  file(s) you want, click **Ingest selected files**.
+  run. Click **List files** — the folder holds 500+ items (agendas,
+  reports, minutes, ...), so the **file name filter** defaults to
+  `minutes`, narrowing both the shown options and the pre-ticked default
+  selection to just the ~90–100 actual meeting-minutes files. Widen or
+  clear that filter later to bring in other content (agendas, etc.) as
+  the project's scope grows. Tick what you want, click **Ingest selected
+  files**.
   - A file whose content is unchanged since it was last ingested is
     skipped.
   - A file that's been **edited** in SharePoint since it was last ingested
