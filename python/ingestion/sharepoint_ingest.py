@@ -96,10 +96,17 @@ def ingest_selected_files(session, project: ProjectConfig, folder_url: str,
             if is_xlsx(item.name):
                 raw_text = parse_xlsx_to_text(raw_bytes)
             else:
+                # BUILD_SCOPED_FILE_URL's first argument is a stage
+                # reference (@db.schema.stage), resolved at parse time —
+                # it can't be passed as a bind parameter (doing so silently
+                # evaluates to null/empty, "Argument 1 ... cannot be null
+                # or empty"). `stage` is trusted (from the project catalog,
+                # not user input), so inlining it is safe here, same as
+                # `schema` already is elsewhere in this file.
                 parsed = session.sql(
-                    "SELECT AI_PARSE_DOCUMENT(BUILD_SCOPED_FILE_URL(?, ?), "
+                    f"SELECT AI_PARSE_DOCUMENT(BUILD_SCOPED_FILE_URL(@{stage}, ?), "
                     "PARSE_JSON('{\"mode\": \"OCR\"}')) AS RESULT",
-                    params=[stage, item.name],
+                    params=[item.name],
                 ).collect()
                 raw_text = _extract_text(parsed[0]["RESULT"])
 
