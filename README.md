@@ -71,8 +71,10 @@ don't need to re-enter them, they're already parameterized for this project.
    and `MEDSOCMS` database.
 2. A Microsoft Graph API app registration with `Sites.Selected` permission
    granted on the `cabinet-mr4` SharePoint site, with:
-   - Tenant ID / Client ID available as `GRAPH_TENANT_ID` / `GRAPH_CLIENT_ID`
-     (environment variables the app reads at runtime)
+   - Tenant ID / Client ID hardcoded as `GRAPH_TENANT_ID` / `GRAPH_CLIENT_ID`
+     constants in `python/config.py` — not secret (Microsoft treats both as
+     public identifiers, visible on the app registration's own Overview
+     page), unlike the client secret below
    - Client secret stored in the Snowflake secret
      `MEDSOCMS.APP_CATALOG.GRAPH_API_SECRET`
 3. The shared Graph API network rule + External Access Integration
@@ -303,6 +305,20 @@ than through OCR — see `python/ingestion/xlsx_parser.py`.
      `No module named '_snowflake'`. `get_client_secret()` now tries
      `st.secrets["graph_secret"]` first and falls back to `_snowflake`
      only if that raises, so it works on either runtime.
+- **`GRAPH_TENANT_ID`/`GRAPH_CLIENT_ID` read as empty strings, causing
+  "Token request failed (404)"** — `config.py` originally read both via
+  `os.environ.get(..., "")`, on the assumption (never actually
+  implemented) that the deploy cell would set them as environment
+  variables. `CREATE STREAMLIT` has no generic environment-variable
+  injection clause — only `SECRETS` — so nothing ever set them, both
+  silently defaulted to `""`, and the resulting token request went to
+  `https://login.microsoftonline.com//oauth2/v2.0/token` (empty tenant
+  segment), which Azure AD 404s. Fixed by hardcoding both as plain string
+  constants in `config.py`, same as `DATABASE`/`ROLE`/`WAREHOUSE_NAME` —
+  unlike the client secret, the tenant ID and client ID aren't
+  confidential (Microsoft surfaces both on the app registration's own
+  Overview page to any reader), so there's no reason to route them
+  through the secret/grant/allow-list chain above.
 
 ## Removing the project
 
