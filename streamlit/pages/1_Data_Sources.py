@@ -7,7 +7,8 @@ import streamlit as st
 from snowflake_session import get_session
 from ingestion.file_ingest import ingest_uploaded_files
 from ingestion.sharepoint_ingest import (
-    list_sharepoint_folder, ingest_selected_files, get_canonical_filenames, filename_match_keys,
+    list_sharepoint_folder, ingest_selected_files, find_register_items,
+    read_register_filenames, filename_match_keys,
 )
 from ingestion.index_builder import build_index_for_project
 
@@ -92,18 +93,36 @@ with tab_sharepoint:
                 listing = list_sharepoint_folder(session, folder_url)
                 st.session_state["sp_listing"] = listing
                 st.session_state["sp_folder_url"] = folder_url
-                st.session_state["sp_canonical_names"] = get_canonical_filenames(
-                    session, folder_url, listing
+                register_items = find_register_items(listing)
+                st.session_state["sp_register_item_names"] = [i.name for i in register_items]
+                st.session_state["sp_canonical_names"] = read_register_filenames(
+                    session, folder_url, register_items
                 )
             except Exception as e:  # noqa: BLE001
                 st.error(f"Couldn't list that folder: {e}")
                 st.session_state["sp_listing"] = None
+                st.session_state["sp_register_item_names"] = []
                 st.session_state["sp_canonical_names"] = []
 
     listing = st.session_state.get("sp_listing")
     canonical_names = st.session_state.get("sp_canonical_names") or []
+    register_item_names = st.session_state.get("sp_register_item_names") or []
     if listing:
         st.write(f"Found **{len(listing)}** file(s) in this folder.")
+
+        if register_item_names:
+            st.caption(
+                f"📋 Register workbook(s) detected: {', '.join(register_item_names)} — "
+                f"read {len(canonical_names)} FileName value(s) from "
+                f"{'it' if len(register_item_names) == 1 else 'them'}."
+            )
+        else:
+            st.caption(
+                '📋 No file matching "BIS_ORG_Meeting_Minutes" was found in this folder '
+                "listing — the register can't be used here, falling back to the plain "
+                "name filter below. If the register workbook lives somewhere other than "
+                "this folder, it needs to be pointed at directly."
+            )
 
         use_register = False
         register_matches = []

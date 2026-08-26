@@ -137,19 +137,24 @@ def ingest_selected_files(session, project: ProjectConfig, folder_url: str,
     return results
 
 
-def get_canonical_filenames(session, folder_url: str,
-                             listing: List[graph_client.DriveItem]) -> List[str]:
-    """
-    Downloads any BIS_ORG_Meeting_Minutes register workbook(s) found in
-    `listing` and reads their FileName column across every sheet. Returns []
-    if no such workbook is present, or none of its sheets have a
-    recognizable FileName column — callers should fall back to a plain name
-    filter in that case, not show an empty list.
-    """
-    register_items = [
+def find_register_items(listing: List[graph_client.DriveItem]) -> List[graph_client.DriveItem]:
+    """Items in `listing` whose name matches the BIS_ORG_Meeting_Minutes
+    register naming pattern — split out from reading them so callers (the
+    Data Sources page) can show *whether a register was found at all*, not
+    just the (possibly silently empty) end result."""
+    return [
         item for item in listing
         if _REGISTER_NAME_TOKEN in normalize_token(item.name) and is_xlsx(item.name)
     ]
+
+
+def read_register_filenames(session, folder_url: str,
+                             register_items: List[graph_client.DriveItem]) -> List[str]:
+    """
+    Downloads each item in register_items and reads its FileName column
+    across every sheet. Returns [] if register_items is empty, or none of
+    the workbooks have a recognizable FileName column.
+    """
     if not register_items:
         return []
 
