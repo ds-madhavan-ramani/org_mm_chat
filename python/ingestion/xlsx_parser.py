@@ -160,15 +160,50 @@ def parse_xlsx_to_text(raw_bytes: bytes) -> str:
     return "\n".join(parts)
 
 
+_HEADER_SCAN_ROWS = 10  # a register sheet may have a title/merged group-header
+# row (or several) above the real header row, e.g. a "From BIS Files" banner
+# spanning several columns on row 1 with the actual "File Name" etc. header
+# one row below it — so don't assume row 1 is the header, search the first
+# few rows for one that actually looks like it.
+
+
+def _find_header_row(rows: List[List[Optional[str]]], wanted_tokens: set):
+    """Returns (row_index, [matching column indices]) for the first of the
+    first _HEADER_SCAN_ROWS rows containing a cell matching wanted_tokens,
+    or (None, []) if none do."""
+    for r_idx, row in enumerate(rows[:_HEADER_SCAN_ROWS]):
+        col_idxs = [i for i, h in enumerate(row) if h and normalize_token(h) in wanted_tokens]
+        if col_idxs:
+            return r_idx, col_idxs
+    return None, []
+
+
+def list_headers(raw_bytes: bytes, max_rows: int = _HEADER_SCAN_ROWS) -> Dict[str, List[List[str]]]:
+    """Returns {sheet_name: [[row1 cells], [row2 cells], ...]} for the first
+    max_rows of every sheet. A diagnostic for figuring out why
+    extract_column_values() found no matching column in a workbook whose
+    exact header text/row isn't known in advance — shows several rows, not
+    just row 1, since a title or merged group-header row can sit above the
+    real header."""
+    preview: Dict[str, List[List[str]]] = {}
+    with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
+        shared = _load_shared_strings(zf)
+        for sheet_name, sheet_path in _load_sheets(zf).items():
+            rows = _parse_rows(zf, sheet_path, shared)
+            preview[sheet_name] = [[c for c in row if c] for row in rows[:max_rows]]
+    return preview
+
+
 def extract_column_values(raw_bytes: bytes, header_names) -> List[str]:
     """
-    Reads every sheet's row-1 header and returns every non-blank value found
-    under any column whose header matches one of header_names (compared via
-    normalize_token, so header spelling/spacing variance doesn't matter).
-    Unlike parse_xlsx_to_text (full-document serialization for indexing),
-    this reads one specific column out of a register/index workbook — e.g.
-    BIS_ORG_Meeting_Minutes.xlsx's FileName column, used to identify which
-    single file per meeting is the canonical version.
+    Scans each sheet's first few rows (see _HEADER_SCAN_ROWS) for one acting
+    as a header — containing a cell matching one of header_names, compared
+    via normalize_token so spelling/spacing variance doesn't matter — then
+    returns every non-blank value found under that column, from the rows
+    below it. Unlike parse_xlsx_to_text (full-document serialization for
+    indexing), this reads one specific column out of a register/index
+    workbook — e.g. BIS_ORG_Meeting_Minutes.xlsx's FileName column, used to
+    identify which single file per meeting is the canonical version.
     """
     wanted = {normalize_token(h) for h in header_names}
     values: List[str] = []
@@ -178,9 +213,10 @@ def extract_column_values(raw_bytes: bytes, header_names) -> List[str]:
             rows = _parse_rows(zf, sheet_path, shared)
             if not rows:
                 continue
-            header = rows[0]
-            col_idxs = [i for i, h in enumerate(header) if h and normalize_token(h) in wanted]
-            for row in rows[1:]:
+            header_row_idx, col_idxs = _find_header_row(rows, wanted)
+            if header_row_idx is None:
+                continue
+            for row in rows[header_row_idx + 1:]:
                 for i in col_idxs:
                     if i < len(row) and row[i]:
                         values.append(row[i].strip())
