@@ -20,10 +20,12 @@ run as either brand-new or an unchanged duplicate.
 
 import hashlib
 from dataclasses import dataclass
-from typing import List
+from typing import Dict, List, Tuple
 
 from config import ProjectConfig, GRAPH_TENANT_ID, GRAPH_CLIENT_ID, MIN_PARSED_TEXT_CHARS
-from ingestion.xlsx_parser import is_xlsx, parse_xlsx_to_text, extract_column_values, normalize_token
+from ingestion.xlsx_parser import (
+    is_xlsx, parse_xlsx_to_text, extract_column_values, list_headers, normalize_token,
+)
 from utils import graph_client
 from utils.logging_utils import get_logger, log_event
 from utils.sql_utils import SQLBuilder
@@ -148,15 +150,22 @@ def find_register_items(listing: List[graph_client.DriveItem]) -> List[graph_cli
     ]
 
 
-def read_register_filenames(session, folder_url: str,
-                             register_items: List[graph_client.DriveItem]) -> List[str]:
+def read_register(
+    session, folder_url: str, register_items: List[graph_client.DriveItem]
+) -> Tuple[List[str], Dict[str, Dict[str, List[str]]]]:
     """
-    Downloads each item in register_items and reads its FileName column
-    across every sheet. Returns [] if register_items is empty, or none of
-    the workbooks have a recognizable FileName column.
+    Downloads each item in register_items once and both (a) reads its
+    FileName column across every sheet and (b) records each sheet's row-1
+    headers — so a caller can show *why* zero names were found (wrong
+    column header text, wrong sheet, ...) without a second download.
+
+    Returns (names, headers_by_item); headers_by_item is keyed by each
+    workbook's display path (falls back to its name if path is blank), so
+    two register workbooks that happen to share a file name are still
+    distinguishable in diagnostics.
     """
     if not register_items:
-        return []
+        return [], {}
 
     token = graph_client._get_access_token(
         GRAPH_TENANT_ID, GRAPH_CLIENT_ID, graph_client.get_client_secret()
@@ -164,10 +173,12 @@ def read_register_filenames(session, folder_url: str,
     drive_id = _get_drive_id(token, folder_url)
 
     names: List[str] = []
+    headers_by_item: Dict[str, Dict[str, List[str]]] = {}
     for item in register_items:
         raw_bytes = graph_client.download_file(token, drive_id, item.item_id)
         names.extend(extract_column_values(raw_bytes, _REGISTER_FILENAME_HEADERS))
-    return names
+        headers_by_item[item.path or item.name] = list_headers(raw_bytes)
+    return names, headers_by_item
 
 
 def filename_match_keys(name: str) -> set:

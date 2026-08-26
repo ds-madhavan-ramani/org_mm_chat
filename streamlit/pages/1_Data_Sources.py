@@ -8,7 +8,7 @@ from snowflake_session import get_session
 from ingestion.file_ingest import ingest_uploaded_files
 from ingestion.sharepoint_ingest import (
     list_sharepoint_folder, ingest_selected_files, find_register_items,
-    read_register_filenames, filename_match_keys,
+    read_register, filename_match_keys,
 )
 from ingestion.index_builder import build_index_for_project
 
@@ -94,28 +94,40 @@ with tab_sharepoint:
                 st.session_state["sp_listing"] = listing
                 st.session_state["sp_folder_url"] = folder_url
                 register_items = find_register_items(listing)
-                st.session_state["sp_register_item_names"] = [i.name for i in register_items]
-                st.session_state["sp_canonical_names"] = read_register_filenames(
-                    session, folder_url, register_items
-                )
+                st.session_state["sp_register_item_paths"] = [
+                    i.path or i.name for i in register_items
+                ]
+                names, headers_by_item = read_register(session, folder_url, register_items)
+                st.session_state["sp_canonical_names"] = names
+                st.session_state["sp_register_headers"] = headers_by_item
             except Exception as e:  # noqa: BLE001
                 st.error(f"Couldn't list that folder: {e}")
                 st.session_state["sp_listing"] = None
-                st.session_state["sp_register_item_names"] = []
+                st.session_state["sp_register_item_paths"] = []
                 st.session_state["sp_canonical_names"] = []
+                st.session_state["sp_register_headers"] = {}
 
     listing = st.session_state.get("sp_listing")
     canonical_names = st.session_state.get("sp_canonical_names") or []
-    register_item_names = st.session_state.get("sp_register_item_names") or []
+    register_item_paths = st.session_state.get("sp_register_item_paths") or []
+    register_headers = st.session_state.get("sp_register_headers") or {}
     if listing:
         st.write(f"Found **{len(listing)}** file(s) in this folder.")
 
-        if register_item_names:
+        if register_item_paths:
             st.caption(
-                f"📋 Register workbook(s) detected: {', '.join(register_item_names)} — "
+                f"📋 Register workbook(s) detected: {'; '.join(register_item_paths)} — "
                 f"read {len(canonical_names)} FileName value(s) from "
-                f"{'it' if len(register_item_names) == 1 else 'them'}."
+                f"{'it' if len(register_item_paths) == 1 else 'them'}."
             )
+            if not canonical_names:
+                with st.expander(
+                    "0 FileName values found — show the actual column headers detected"
+                ):
+                    for path, sheets in register_headers.items():
+                        st.write(f"**{path}**")
+                        for sheet_name, headers in sheets.items():
+                            st.write(f"- Sheet \"{sheet_name}\": {headers}")
         else:
             st.caption(
                 '📋 No file matching "BIS_ORG_Meeting_Minutes" was found in this folder '

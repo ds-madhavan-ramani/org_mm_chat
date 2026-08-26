@@ -160,6 +160,20 @@ def parse_xlsx_to_text(raw_bytes: bytes) -> str:
     return "\n".join(parts)
 
 
+def list_headers(raw_bytes: bytes) -> Dict[str, List[str]]:
+    """Returns {sheet_name: [row-1 header cell values]} for every sheet with
+    at least one row. A diagnostic for figuring out why
+    extract_column_values() found no matching column in a workbook whose
+    exact header text/layout isn't known in advance."""
+    headers: Dict[str, List[str]] = {}
+    with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
+        shared = _load_shared_strings(zf)
+        for sheet_name, sheet_path in _load_sheets(zf).items():
+            rows = _parse_rows(zf, sheet_path, shared)
+            headers[sheet_name] = [h for h in (rows[0] if rows else []) if h]
+    return headers
+
+
 def extract_column_values(raw_bytes: bytes, header_names) -> List[str]:
     """
     Reads every sheet's row-1 header and returns every non-blank value found
