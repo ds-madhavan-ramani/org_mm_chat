@@ -273,10 +273,36 @@ than through OCR — see `python/ingestion/xlsx_parser.py`.
   entirely (`graph_client.py`'s `get_client_secret()` used the ad-hoc
   form). Fixed by adding `SECRETS = ('graph_secret' =
   MEDSOCMS.APP_CATALOG.GRAPH_API_SECRET)` to the deploy cell's `CREATE
-  STREAMLIT` statement (both runtime branches) and reading the secret via
-  `_snowflake.get_generic_secret_string("graph_secret")` in Python
-  instead — the correct access path for a secret bound to a Streamlit
-  app/UDF/procedure via `EXTERNAL_ACCESS_INTEGRATIONS` + `SECRETS`.
+  STREAMLIT` statement (both runtime branches). Getting that clause to
+  actually work took three more steps, each surfacing only once the prior
+  one was fixed:
+  1. The `SECRET` object itself has to exist — `CREATE SECRET ...
+     SECRET_STRING = '<value>'` is a one-time, manual, **not committed to
+     this repo** statement run directly in Snowsight by whoever holds the
+     real Azure AD client secret value (see `sql/test_graph_connectivity.sql`,
+     which keeps that statement commented out permanently, purely as
+     documentation of the step).
+  2. The role deploying the app needs `USAGE` on that secret
+     (`GRANT USAGE ON SECRET MEDSOCMS.APP_CATALOG.GRAPH_API_SECRET TO ROLE
+     ADVANCEDANALYTICS`), or `CREATE OR REPLACE STREAMLIT` fails with
+     "Secret ... does not exist or operation not authorized."
+  3. The external access integration referenced alongside the `SECRETS`
+     clause (`GRAPH_API_ACCESS_INTEGRATION`) must separately allow-list
+     the secret via `ALTER EXTERNAL ACCESS INTEGRATION
+     GRAPH_API_ACCESS_INTEGRATION SET ALLOWED_AUTHENTICATION_SECRETS =
+     (MEDSOCMS.APP_CATALOG.GRAPH_API_SECRET)`, or deploy fails with
+     "Integrations do not allow secret '...'". Like the other EAI/compute
+     pool grants in this project, both (2) and (3) needed `ACCOUNTADMIN`.
+  4. **Reading** a bound secret from Python differs by runtime, and the
+     two are mutually exclusive: warehouse runtime exposes it via the
+     `_snowflake` module (`_snowflake.get_generic_secret_string(alias)`),
+     while container runtime — what this app actually runs on — has no
+     `_snowflake` module at all and instead exposes it through
+     `st.secrets[alias]` (also mirrored into `os.environ`). Using the
+     warehouse-runtime API on container runtime fails at import time with
+     `No module named '_snowflake'`. `get_client_secret()` now tries
+     `st.secrets["graph_secret"]` first and falls back to `_snowflake`
+     only if that raises, so it works on either runtime.
 
 ## Removing the project
 
