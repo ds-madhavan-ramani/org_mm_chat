@@ -23,12 +23,21 @@ from dataclasses import dataclass
 from typing import List
 
 from config import ProjectConfig, GRAPH_TENANT_ID, GRAPH_CLIENT_ID, MIN_PARSED_TEXT_CHARS
-from ingestion.xlsx_parser import is_xlsx, parse_xlsx_to_text
+from ingestion.xlsx_parser import is_xlsx, parse_xlsx_to_text, extract_column_values, normalize_token
 from utils import graph_client
 from utils.logging_utils import get_logger, log_event
 from utils.sql_utils import SQLBuilder
 
 logger = get_logger(__name__)
+
+# BIS_ORG_Meeting_Minutes.xlsx is a hand-maintained register, not raw minutes
+# content: for each meeting it names the one canonical file out of however
+# many Draft/Initial/Final/Updated/Revised versions exist in the folder.
+# Matched by normalized substring so spacing/case/punctuation drift in the
+# actual file name (e.g. "BIS ORG Meeting Minutes - Register.xlsx") doesn't
+# break the match.
+_REGISTER_NAME_TOKEN = normalize_token("BIS_ORG_Meeting_Minutes")
+_REGISTER_FILENAME_HEADERS = ("FileName", "File Name")
 
 
 @dataclass
@@ -126,6 +135,44 @@ def ingest_selected_files(session, project: ProjectConfig, folder_url: str,
 
     _log_sync_run(session, project, results)
     return results
+
+
+def get_canonical_filenames(session, folder_url: str,
+                             listing: List[graph_client.DriveItem]) -> List[str]:
+    """
+    Downloads any BIS_ORG_Meeting_Minutes register workbook(s) found in
+    `listing` and reads their FileName column across every sheet. Returns []
+    if no such workbook is present, or none of its sheets have a
+    recognizable FileName column — callers should fall back to a plain name
+    filter in that case, not show an empty list.
+    """
+    register_items = [
+        item for item in listing
+        if _REGISTER_NAME_TOKEN in normalize_token(item.name) and is_xlsx(item.name)
+    ]
+    if not register_items:
+        return []
+
+    token = graph_client._get_access_token(
+        GRAPH_TENANT_ID, GRAPH_CLIENT_ID, graph_client.get_client_secret()
+    )
+    drive_id = _get_drive_id(token, folder_url)
+
+    names: List[str] = []
+    for item in register_items:
+        raw_bytes = graph_client.download_file(token, drive_id, item.item_id)
+        names.extend(extract_column_values(raw_bytes, _REGISTER_FILENAME_HEADERS))
+    return names
+
+
+def filename_match_keys(name: str) -> set:
+    """A file name's comparison keys: itself and its extension-stripped stem
+    (both lowercased), so a register entry stored without an extension
+    ('Final Minutes - March 2024') still matches the real file name with
+    one ('Final Minutes - March 2024.pdf')."""
+    n = name.strip().lower()
+    stem = n.rsplit(".", 1)[0] if "." in n else n
+    return {n, stem}
 
 
 def _get_drive_id(token: str, folder_url: str) -> str:
