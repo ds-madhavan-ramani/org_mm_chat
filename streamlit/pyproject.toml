@@ -8,8 +8,9 @@ dependencies = [
     # warehouse runtime is capped at whatever Snowflake's Conda channel
     # offers for this account (1.22.0, confirmed not overridable via
     # environment.yml), which is why this project moved to container
-    # runtime at all. No upper pin: any 1.50+ patch is fine.
-    "streamlit[snowflake]>=1.50.0",
+    # runtime at all. Pinned exactly (not a >= floor) to the specific
+    # version confirmed working, avoiding resolver ambiguity.
+    "streamlit[snowflake]==1.50.0",
     "requests",
     "pandas",
 ]
