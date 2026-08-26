@@ -66,7 +66,9 @@ def complete_json(session, model: str, prompt: str, max_tokens: int = 4096) -> d
         parsed = json.loads(cleaned)
     except json.JSONDecodeError as e:
         logger.error("EVENT=JSON_PARSE_ERROR response_preview=%r", raw[:500])
-        raise CortexError(f"Cortex response was not valid JSON: {e}") from e
+        raise CortexError(
+            f"Cortex response was not valid JSON: {e} — raw response preview: {raw[:300]!r}"
+        ) from e
 
     # Some models, asked to "return ONLY valid JSON", escape their entire
     # answer as a JSON *string* instead of emitting the object directly —
@@ -87,8 +89,13 @@ def complete_json(session, model: str, prompt: str, max_tokens: int = 4096) -> d
     if not isinstance(parsed, dict):
         # Still not an object after unwrapping — a genuine non-JSON-object
         # response (e.g. a plain refusal message), not just double-encoding.
+        # Include a raw preview in the raised message itself (not just the
+        # server-side log) so it's visible directly in the Streamlit error
+        # card — otherwise there's no way to tell a still-unresolved parse
+        # shape apart from a stale, not-yet-redeployed copy of this file.
         logger.error("EVENT=JSON_PARSE_ERROR response_preview=%r", raw[:500])
         raise CortexError(
-            f"Cortex response was valid JSON but not a JSON object (got {type(parsed).__name__})"
+            f"Cortex response was valid JSON but not a JSON object (got {type(parsed).__name__}) "
+            f"— raw response preview: {raw[:300]!r}"
         )
     return parsed
