@@ -122,12 +122,14 @@ with tab_sharepoint:
             )
             if not canonical_names:
                 with st.expander(
-                    "0 FileName values found — show the actual column headers detected"
+                    "0 FileName values found — show the first few rows of each sheet"
                 ):
                     for path, sheets in register_headers.items():
                         st.write(f"**{path}**")
-                        for sheet_name, headers in sheets.items():
-                            st.write(f"- Sheet \"{sheet_name}\": {headers}")
+                        for sheet_name, rows in sheets.items():
+                            st.write(f"Sheet \"{sheet_name}\":")
+                            for r_idx, row in enumerate(rows, start=1):
+                                st.write(f"- Row {r_idx}: {row}")
         else:
             st.caption(
                 '📋 No file matching "BIS_ORG_Meeting_Minutes" was found in this folder '
