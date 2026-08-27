@@ -336,6 +336,54 @@ than through OCR — see `python/ingestion/xlsx_parser.py`.
   confidential (Microsoft surfaces both on the app registration's own
   Overview page to any reader), so there's no reason to route them
   through the secret/grant/allow-list chain above.
+- **`AI_PARSE_DOCUMENT` type error on non-xlsx uploads/SharePoint files:
+  "Invalid argument types for function 'AI_PARSE_DOCUMENT$V4':
+  (VARCHAR, VARIANT)"** — `AI_PARSE_DOCUMENT` needs a `FILE`-typed
+  argument, built via `TO_FILE('@stage', 'path')`; `BUILD_SCOPED_FILE_URL`
+  returns a plain `VARCHAR` URL instead, which fails this way. Also fixed
+  separately: `BUILD_SCOPED_FILE_URL`'s stage argument is a bare `@stage`
+  reference resolved at SQL parse time and can't be a bind parameter at
+  all (a different error, "Argument 1 ... cannot be null or empty") —
+  `TO_FILE`'s stage argument is an ordinary quoted string, so switching to
+  it fixes both problems and lets both arguments stay bind parameters.
+  Both `sharepoint_ingest.py` and `file_ingest.py` had this bug
+  independently (same `AI_PARSE_DOCUMENT` call, copy-pasted).
+- **`complete_json()` failing on markdown-fenced or trailing-content
+  responses** — models don't reliably follow "return ONLY valid JSON, no
+  commentary." Three distinct failure shapes hit in production: the whole
+  fenced answer escaped as one JSON string
+  (`'"```json\n{...}\n```"'`), a valid JSON object followed by a prose
+  explanation after the closing fence (`'```json\n{...}\n```\n\nBased on
+  my review...'`, which plain `json.loads()` rejects as "Extra data" even
+  though the JSON itself is fine), and doubly-encoded JSON. Fixed by
+  switching to `json.JSONDecoder().raw_decode()` (parses just the first
+  complete JSON value, ignoring anything trailing it) plus a bounded
+  unwrap loop for JSON-string-encoded results, with markdown fences
+  stripped at each unwrap level, not just before the first parse attempt.
+- **Chat answers showing literal `\n` instead of line breaks, and
+  citations with no numbering or links** — the final answer-synthesis
+  call (`complete()`, not `complete_json()` — there's no JSON involved)
+  sometimes emits the literal two-character sequence `\n` instead of a
+  real newline, the same unreliable-formatting-instructions pattern as
+  above, just showing up as visible backslash-n text in the chat UI
+  rather than a parse error. `query_engine.py` now normalizes that after
+  the model call. Separately, citations are now numbered and, when the
+  source document came from SharePoint, clickable — `RAW_DOCUMENTS` grew
+  a `SOURCE_URL` column (Graph API's `webUrl`, captured at ingest time;
+  `NULL` for direct uploads, which have no SharePoint source to link to).
+  **The already-created `ORG_MM_CHAT` project's live schema needs a
+  one-time manual migration** (new projects get the column automatically
+  from the updated `sql/00_setup_catalog.sql` template):
+  ```sql
+  ALTER TABLE MEDSOCMS.DATA_ORG_MM_CHAT.RAW_DOCUMENTS
+    ADD COLUMN IF NOT EXISTS SOURCE_URL VARCHAR(2000);
+  ```
+  Existing rows will have `SOURCE_URL = NULL` until then; a citation for
+  one of those just renders without a link, not an error. From there,
+  re-running **List files → Ingest selected files** on the SharePoint tab
+  backfills `SOURCE_URL` for already-ingested files too — even an
+  unchanged file's "skipped, unchanged" path now cheaply updates just
+  that column instead of requiring a full re-parse.
 
 ## Removing the project
 

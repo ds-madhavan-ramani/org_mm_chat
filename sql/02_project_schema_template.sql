@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS RAW_DOCUMENTS (
     DOCUMENT_DATE               DATE,
     RAW_TEXT                     VARCHAR(16777216),
     SOURCE_HASH                   VARCHAR(64),
+    SOURCE_URL                     VARCHAR(2000),           -- SharePoint webUrl, NULL for uploads
     PARSED_AT                      TIMESTAMP_NTZ,
     CREATED_AT                      TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
 );

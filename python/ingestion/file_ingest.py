@@ -50,10 +50,14 @@ def ingest_uploaded_files(session, project: ProjectConfig, uploaded_files: List)
             if is_xlsx(f.name):
                 raw_text = parse_xlsx_to_text(raw_bytes)
             else:
+                # AI_PARSE_DOCUMENT needs a FILE-typed argument, built via
+                # TO_FILE('@stage', 'path') — not the VARCHAR URL
+                # BUILD_SCOPED_FILE_URL returns (same bug fixed in
+                # sharepoint_ingest.py's equivalent call).
                 parsed = session.sql(
-                    "SELECT AI_PARSE_DOCUMENT(BUILD_SCOPED_FILE_URL(?, ?), "
+                    "SELECT AI_PARSE_DOCUMENT(TO_FILE(?, ?), "
                     "PARSE_JSON('{\"mode\": \"OCR\"}')) AS RESULT",
-                    params=[stage, f.name],
+                    params=[f"@{stage}", f.name],
                 ).collect()
                 raw_text = _extract_text(parsed[0]["RESULT"])
 
@@ -71,7 +75,8 @@ def ingest_uploaded_files(session, project: ProjectConfig, uploaded_files: List)
 
             session.sql(
                 SQLBuilder.build_merge_raw_document(schema),
-                params=[f.name, stage_path, "UPLOAD", None, None, raw_text, source_hash],
+                params=[f.name, stage_path, "UPLOAD", None, None, raw_text,
+                        source_hash, None],
             ).collect()
 
             if before > 0:

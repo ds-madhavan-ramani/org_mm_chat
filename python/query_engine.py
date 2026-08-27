@@ -11,7 +11,7 @@ assume that never happens.
 import hashlib
 import time
 from dataclasses import dataclass, field
-from typing import List
+from typing import Dict, List
 
 from config import ProjectConfig, DATABASE, CATALOG_SCHEMA
 from utils.cortex_client import complete, complete_json
@@ -23,9 +23,26 @@ logger = get_logger(__name__)
 @dataclass
 class AnswerResult:
     answer: str
-    cited_docs: List[str] = field(default_factory=list)
+    # [{"number": 1, "file_name": ..., "url": ...}, ...] — url is None for
+    # directly-uploaded documents (no SharePoint source to link to). Older
+    # cached rows (from before citations were structured) may still hold
+    # plain filename strings; render defensively for both shapes.
+    cited_docs: List[Dict] = field(default_factory=list)
     nodes_visited: List[int] = field(default_factory=list)
     from_cache: bool = False
+
+
+def _normalize_answer_text(text: str) -> str:
+    """Some models emit literal backslash-n / backslash-t escape sequences
+    in plain-text (non-JSON) responses instead of real whitespace — the
+    same unreliable-formatting quirk complete_json() works around for
+    structured responses, just showing up here as visible '\\n' text in
+    the chat UI instead of a JSON parse error."""
+    return (
+        text.replace("\\r\\n", "\n")
+            .replace("\\n", "\n")
+            .replace("\\t", "\t")
+    )
 
 
 def search(session, project: ProjectConfig, question: str, use_cache: bool = True) -> AnswerResult:
@@ -115,24 +132,38 @@ Return ONLY JSON: {{"node_ids": [1, 2]}}"""
     # Stage 3: pull raw text for selected sections and synthesize
     placeholders = ", ".join(["?"] * len(node_ids))
     selected = session.sql(
-        f"""SELECT DI.NODE_ID, DI.NODE_TITLE, DI.NODE_TEXT_REF, RD.FILE_NAME, RD.RAW_TEXT
+        f"""SELECT DI.NODE_ID, DI.NODE_TITLE, DI.NODE_TEXT_REF,
+                   RD.FILE_NAME, RD.RAW_TEXT, RD.SOURCE_URL
             FROM {schema}.DOCUMENT_INDEX DI
             JOIN {schema}.RAW_DOCUMENTS RD ON DI.DOC_ID = RD.DOC_ID
             WHERE DI.NODE_ID IN ({placeholders})""",
         params=node_ids,
     ).collect()
 
+    # Number sources deterministically in code (not left to the model) —
+    # this is what actually appears in the Sources list and any [n]
+    # markers the model uses are just following along with it, so the
+    # citation list is always correct even if the model's inline markers
+    # aren't.
+    doc_urls = {}
+    for s in selected:
+        doc_urls.setdefault(s["FILE_NAME"], s["SOURCE_URL"])
+    file_names_sorted = sorted(doc_urls)
+    doc_numbers = {name: i + 1 for i, name in enumerate(file_names_sorted)}
+
     context_chunks = []
-    cited_docs = set()
     for s in selected:
         start_off, end_off = (int(x) for x in s["NODE_TEXT_REF"].split(":"))
         excerpt = s["RAW_TEXT"][start_off:end_off][: project.max_section_chars]
-        context_chunks.append(f"[{s['FILE_NAME']} — {s['NODE_TITLE']}]\n{excerpt}")
-        cited_docs.add(s["FILE_NAME"])
+        n = doc_numbers[s["FILE_NAME"]]
+        context_chunks.append(f"[{n}] {s['FILE_NAME']} — {s['NODE_TITLE']}\n{excerpt}")
 
     synthesis_prompt = f"""Answer the question using ONLY the excerpts below.
-Cite the source file name for each claim. If the excerpts don't fully answer
-the question, say so explicitly rather than guessing.
+Format the answer as a bulleted list, one point per bullet, with a blank
+line between bullets — use real line breaks, never the literal characters
+backslash-n. Cite sources inline using the bracketed number shown before
+each excerpt, e.g. [1]. If the excerpts don't fully answer the question,
+say so explicitly rather than guessing.
 
 QUESTION: {question}
 
@@ -140,11 +171,17 @@ EXCERPTS:
 {chr(10).join(context_chunks)}
 """
     answer_text = complete(session, project.active_model, synthesis_prompt)
+    answer_text = _normalize_answer_text(answer_text)
     latency_ms = int((time.time() - start) * 1000)
+
+    citations = [
+        {"number": doc_numbers[name], "file_name": name, "url": doc_urls[name]}
+        for name in file_names_sorted
+    ]
 
     result = AnswerResult(
         answer=answer_text,
-        cited_docs=sorted(cited_docs),
+        cited_docs=citations,
         nodes_visited=node_ids,
     )
 

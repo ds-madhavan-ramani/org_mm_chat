@@ -118,6 +118,15 @@ def ingest_selected_files(session, project: ProjectConfig, folder_url: str,
             source_hash = hashlib.sha256(raw_text.encode()).hexdigest()
 
             if existing and existing[0]["SOURCE_HASH"] == source_hash:
+                # Unchanged content — skip the expensive re-parse, but
+                # still cheaply backfill SOURCE_URL if it's missing (e.g.
+                # this row was ingested before that column existed).
+                if item.web_url:
+                    session.sql(
+                        f"""UPDATE {schema}.RAW_DOCUMENTS SET SOURCE_URL = ?
+                            WHERE SHAREPOINT_ITEM_ID = ? AND SOURCE_URL IS NULL""",
+                        params=[item.web_url, item.item_id],
+                    ).collect()
                 results.append(IngestResult(item.name, "SKIPPED_DUPLICATE",
                                              doc_id=existing[0]["DOC_ID"]))
                 continue
@@ -125,7 +134,7 @@ def ingest_selected_files(session, project: ProjectConfig, folder_url: str,
             session.sql(
                 SQLBuilder.build_merge_raw_document_by_sharepoint_item(schema),
                 params=[item.name, stage_path, "SHAREPOINT", item.item_id,
-                        None, raw_text, source_hash],
+                        None, raw_text, source_hash, item.web_url],
             ).collect()
 
             doc_id = session.sql(

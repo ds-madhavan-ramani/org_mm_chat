@@ -65,11 +65,20 @@ def _render_message(role: str, content: str, cited_docs=None, from_cache: bool =
     with ctx:
         if not _HAS_CHAT_UI:
             st.markdown(f"**{'You' if role == 'user' else 'Assistant'}:**")
-        st.write(content)
+        st.markdown(content)
         if cited_docs:
             with st.expander(f"Sources ({len(cited_docs)})"):
                 for doc in cited_docs:
-                    st.write(f"- {doc}")
+                    if isinstance(doc, dict):
+                        n = doc.get("number", "")
+                        name = doc.get("file_name", "")
+                        url = doc.get("url")
+                        st.markdown(f"{n}. [{name}]({url})" if url else f"{n}. {name}")
+                    else:
+                        # Older cached rows stored cited_docs as plain
+                        # filename strings, before citations gained
+                        # numbers/URLs — render those the old way.
+                        st.write(f"- {doc}")
         if from_cache:
             st.caption("⚡ Answered from cache")
 
