@@ -223,6 +223,20 @@ control how much evidence a question can pull in:
     defensively in code (`MAX_NODE_SUMMARY_CHARS`/`_truncate()`) as a
     backstop — a still-longer response degrades gracefully instead of
     failing the whole document, regardless of the column width.
+  - The `ALTER COLUMN ... SET DATA TYPE VARCHAR(8000)` migration itself
+    failed the first time with "cannot change column NODE_SUMMARY from
+    type VARCHAR(4000) COLLATE 'en-ci' to VARCHAR(8000) because they
+    have incompatible collations" — this account applies a default
+    collation (`en-ci`) to `VARCHAR` columns, and Snowflake requires an
+    `ALTER COLUMN ... SET DATA TYPE` to match the existing column's
+    collation exactly, even for a pure length widen with no other type
+    change. Fixed by specifying it explicitly:
+    `VARCHAR(8000) COLLATE 'en-ci'`. Only matters for `ALTER COLUMN`
+    migrations on an existing column — a fresh `CREATE TABLE` isn't
+    affected, since there's no prior collation to conflict with. Any
+    future `ALTER COLUMN ... SET DATA TYPE` migration added to the
+    provisioning notebook's "Schema migrations" cell on this account
+    will need the same explicit `COLLATE 'en-ci'`.
 
 ## Known account-level gotchas (Streamlit-in-Snowflake)
 
