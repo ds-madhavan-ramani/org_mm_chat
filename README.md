@@ -210,6 +210,19 @@ control how much evidence a question can pull in:
   documents** — Data Sources → Index → **Rebuild all**, which re-runs
   every document through Cortex again (91 documents ≈ 91 LLM calls; not
   free, and not instant).
+  - This asks for genuinely more detail than a short gloss, which
+    routinely produces summaries longer than `DOCUMENT_INDEX
+    .NODE_SUMMARY`'s original `VARCHAR(4000)` — Snowflake errors on an
+    overlong `INSERT` ("... is too long and would be truncated") rather
+    than silently truncating, which failed indexing outright for any
+    document whose summary crossed that line. Fixed two ways: the column
+    is now `VARCHAR(8000)` (new projects get this from
+    `sql/00_setup_catalog.sql`; the existing project needed the
+    `NODE_SUMMARY` migration in the provisioning notebook's "Schema
+    migrations" cell), and `index_builder.py` now also truncates
+    defensively in code (`MAX_NODE_SUMMARY_CHARS`/`_truncate()`) as a
+    backstop — a still-longer response degrades gracefully instead of
+    failing the whole document, regardless of the column width.
 
 ## Known account-level gotchas (Streamlit-in-Snowflake)
 

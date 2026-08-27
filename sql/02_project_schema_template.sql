@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS DOCUMENT_INDEX (
     PARENT_NODE_ID     INT,
     NODE_LEVEL           VARCHAR(20) NOT NULL,          -- 'document' | 'section' | 'subsection'
     NODE_TITLE             VARCHAR(500),
-    NODE_SUMMARY             VARCHAR(4000),
+    NODE_SUMMARY             VARCHAR(8000),   -- generous headroom for a thorough per-section paragraph
     NODE_TEXT_REF              VARCHAR(50),
     CREATED_AT                  TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
 );
