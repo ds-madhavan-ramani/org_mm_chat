@@ -61,6 +61,10 @@ class ProjectConfig:
     max_citations_display: int
     segmentation_profile: str
     status: str
+    segmentation_granularity: str
+    enable_reranking: bool
+    enable_vector_search: bool
+    max_candidate_docs: int
 
     @property
     def qualified_schema(self) -> str:
@@ -82,6 +86,12 @@ class ProjectConfig:
     def is_container_runtime(self) -> bool:
         return bool(self.compute_pool)
 
+    @property
+    def clamped_max_candidate_docs(self) -> int:
+        """MAX_CANDIDATE_DOCS is a config number, not DB-enforced (Snowflake
+        accepts CHECK constraint syntax but never enforces it) — clamp here."""
+        return max(5, min(10, self.max_candidate_docs))
+
 
 def load_project(session, project_code: str) -> ProjectConfig:
     """Fetch a project's config row. Raises ValueError if not found/archived."""
@@ -92,7 +102,9 @@ def load_project(session, project_code: str) -> ProjectConfig:
                    SHAREPOINT_SITE_URL, SHAREPOINT_DEFAULT_FOLDER,
                    ACTIVE_MODEL, MAX_DOCUMENT_CHARS, MAX_SECTION_CHARS,
                    QUERY_CACHE_TTL_HOURS, MAX_CITATIONS_DISPLAY,
-                   SEGMENTATION_PROFILE, STATUS
+                   SEGMENTATION_PROFILE, STATUS,
+                   SEGMENTATION_GRANULARITY, ENABLE_RERANKING,
+                   ENABLE_VECTOR_SEARCH, MAX_CANDIDATE_DOCS
             FROM {DATABASE}.{CATALOG_SCHEMA}.PROJECTS
             WHERE PROJECT_CODE = ?""",
         params=[project_code.strip().upper()],
@@ -122,6 +134,10 @@ def load_project(session, project_code: str) -> ProjectConfig:
         max_citations_display=r["MAX_CITATIONS_DISPLAY"],
         segmentation_profile=r["SEGMENTATION_PROFILE"],
         status=r["STATUS"],
+        segmentation_granularity=r["SEGMENTATION_GRANULARITY"],
+        enable_reranking=bool(r["ENABLE_RERANKING"]),
+        enable_vector_search=bool(r["ENABLE_VECTOR_SEARCH"]),
+        max_candidate_docs=r["MAX_CANDIDATE_DOCS"],
     )
 
 

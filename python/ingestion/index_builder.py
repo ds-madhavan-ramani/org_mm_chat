@@ -58,7 +58,7 @@ Read the document text below and identify its natural sections (headings,
 topic breaks, or logical divisions — do not force a fixed set of section
 names). For each section, produce a concise 2-3 sentence summary plus the
 character offsets (start, end) of that section within the original text.
-
+{granularity_instruction}
 Return ONLY valid JSON in this shape, no commentary:
 {{
   "document_summary": "2-3 sentence summary of the whole document",
@@ -95,7 +95,7 @@ one of these terms later needs to find it in the summary text itself, not
 just its general meaning. Do not force sections that don't exist in the
 text; if the document has no clear per-meeting breaks, fall back to its
 natural headings/topic breaks instead.
-
+{granularity_instruction}
 Return ONLY valid JSON in this shape, no commentary:
 {{
   "document_summary": "3-5 sentence summary of the whole document (date range covered, overall purpose, and any recurring topics, systems, or codes discussed across meetings)",
@@ -108,6 +108,27 @@ DOCUMENT TEXT:
 {text}
 """,
 }
+
+# Optional per-project knob (PROJECTS.SEGMENTATION_GRANULARITY): pushes the
+# indexing prompt to split each natural break further into per-topic /
+# per-agenda-item sections instead of one section per meeting/sheet. Both
+# PROMPTS templates above take a {granularity_instruction} placeholder so
+# any segmentation profile can run at either granularity.
+SEGMENTATION_GRANULARITY_INSTRUCTIONS = {
+    "STANDARD": "",
+    "DETAILED": (
+        "\nGo finer-grained than one section per meeting/sheet: within each "
+        "meeting or sheet, further split into one section per distinct "
+        "topic, agenda item, or action/decision discussed, so each section "
+        "covers a single subject rather than an entire meeting.\n"
+    ),
+}
+
+
+def _granularity_instruction(project: ProjectConfig) -> str:
+    return SEGMENTATION_GRANULARITY_INSTRUCTIONS.get(
+        project.segmentation_granularity, ""
+    )
 
 
 def build_index_for_project(session, project: ProjectConfig,
@@ -177,7 +198,10 @@ def _index_one_document(session, project: ProjectConfig, doc_id: int, file_name:
 
     try:
         result = complete_json(session, project.active_model,
-                                prompt_template.format(text=text))
+                                prompt_template.format(
+                                    text=text,
+                                    granularity_instruction=_granularity_instruction(project),
+                                ))
 
         root_id = session.sql(
             f"""INSERT INTO {schema}.DOCUMENT_INDEX
@@ -200,7 +224,7 @@ def _index_one_document(session, project: ProjectConfig, doc_id: int, file_name:
             text_ref = f"{section.get('start', 0)}:{section.get('end', len(text))}"
 
             inserted = False
-            if embed_enabled[0]:
+            if project.enable_vector_search and embed_enabled[0]:
                 try:
                     session.sql(
                         f"""INSERT INTO {schema}.DOCUMENT_INDEX
