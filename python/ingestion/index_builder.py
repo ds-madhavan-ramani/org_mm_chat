@@ -33,6 +33,13 @@ logger = get_logger(__name__)
 MAX_NODE_SUMMARY_CHARS = 8000
 MAX_NODE_TITLE_CHARS = 500
 
+# Text embedding model for DOCUMENT_INDEX.NODE_EMBEDDING (vector/semantic
+# search — see query_engine.py's hybrid retrieval). AI_EMBED is the
+# forward-looking function (EMBED_TEXT_768/1024 are the legacy names,
+# slated for deprecation); 'snowflake-arctic-embed-m' returns a 768-dim
+# vector, matching DOCUMENT_INDEX.NODE_EMBEDDING's declared width.
+EMBED_MODEL = "snowflake-arctic-embed-m"
+
 
 def _truncate(text, max_chars: int) -> str:
     text = text or ""
@@ -136,12 +143,21 @@ def build_index_for_project(session, project: ProjectConfig,
         params=params,
     ).collect()
 
+    # Shared across the whole run (not reset per-document): if AI_EMBED
+    # fails once — e.g. embeddings aren't enabled on this account — there's
+    # no reason to retry and fail identically on every remaining document.
+    # A single mutable cell so _index_one_document can flip it off and have
+    # that take effect for the rest of this call. Embeddings are an
+    # additive retrieval signal (see query_engine.py), not a hard
+    # requirement, so disabling them never fails the document itself.
+    embed_enabled = [True]
+
     errors: List[str] = []
     indexed = 0
     for doc in docs:
         try:
             _index_one_document(session, project, doc["DOC_ID"], doc["FILE_NAME"],
-                                 doc["RAW_TEXT"], prompt_template, rebuild)
+                                 doc["RAW_TEXT"], prompt_template, rebuild, embed_enabled)
             indexed += 1
         except Exception as e:  # noqa: BLE001
             errors.append(f"{doc['FILE_NAME']}: {e}")
@@ -150,7 +166,8 @@ def build_index_for_project(session, project: ProjectConfig,
 
 
 def _index_one_document(session, project: ProjectConfig, doc_id: int, file_name: str,
-                         raw_text: str, prompt_template: str, rebuild: bool):
+                         raw_text: str, prompt_template: str, rebuild: bool,
+                         embed_enabled: List[bool]):
     schema = project.qualified_schema
     text = raw_text[: project.max_document_chars]
 
@@ -178,15 +195,37 @@ def _index_one_document(session, project: ProjectConfig, doc_id: int, file_name:
         ).collect()[0]["NODE_ID"]
 
         for section in result.get("sections", []):
-            session.sql(
-                f"""INSERT INTO {schema}.DOCUMENT_INDEX
-                    (DOC_ID, PARENT_NODE_ID, NODE_LEVEL, NODE_TITLE, NODE_SUMMARY, NODE_TEXT_REF)
-                    SELECT ?, ?, 'section', ?, ?, ?""",
-                params=[doc_id, root_node_id,
-                        _truncate(section.get("title", ""), MAX_NODE_TITLE_CHARS),
-                        _truncate(section.get("summary", ""), MAX_NODE_SUMMARY_CHARS),
-                        f"{section.get('start', 0)}:{section.get('end', len(text))}"],
-            ).collect()
+            title = _truncate(section.get("title", ""), MAX_NODE_TITLE_CHARS)
+            summary = _truncate(section.get("summary", ""), MAX_NODE_SUMMARY_CHARS)
+            text_ref = f"{section.get('start', 0)}:{section.get('end', len(text))}"
+
+            inserted = False
+            if embed_enabled[0]:
+                try:
+                    session.sql(
+                        f"""INSERT INTO {schema}.DOCUMENT_INDEX
+                            (DOC_ID, PARENT_NODE_ID, NODE_LEVEL, NODE_TITLE, NODE_SUMMARY,
+                             NODE_TEXT_REF, NODE_EMBEDDING)
+                            SELECT ?, ?, 'section', ?, ?, ?, AI_EMBED(?, ?)""",
+                        params=[doc_id, root_node_id, title, summary, text_ref,
+                                EMBED_MODEL, f"{title}: {summary}"],
+                    ).collect()
+                    inserted = True
+                except Exception:
+                    logger.warning(
+                        "EVENT=EMBED_UNAVAILABLE — disabling embeddings for the "
+                        "rest of this run, indexing continues without them",
+                        exc_info=True,
+                    )
+                    embed_enabled[0] = False
+
+            if not inserted:
+                session.sql(
+                    f"""INSERT INTO {schema}.DOCUMENT_INDEX
+                        (DOC_ID, PARENT_NODE_ID, NODE_LEVEL, NODE_TITLE, NODE_SUMMARY, NODE_TEXT_REF)
+                        SELECT ?, ?, 'section', ?, ?, ?""",
+                    params=[doc_id, root_node_id, title, summary, text_ref],
+                ).collect()
 
         log_event(logger, "INDEX_BUILD", project.project_code,
                   doc_id=doc_id, sections=len(result.get("sections", [])))

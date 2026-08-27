@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS DOCUMENT_INDEX (
     NODE_TITLE             VARCHAR(500),
     NODE_SUMMARY             VARCHAR(8000),   -- generous headroom for a thorough per-section paragraph
     NODE_TEXT_REF              VARCHAR(50),
+    NODE_EMBEDDING               VECTOR(FLOAT, 768),  -- section-level only; see index_builder.py/query_engine.py
     CREATED_AT                  TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
 );
 

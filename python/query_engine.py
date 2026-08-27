@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List
 
 from config import ProjectConfig, DATABASE, CATALOG_SCHEMA
+from ingestion.index_builder import EMBED_MODEL
 from utils.cortex_client import complete, complete_json, CortexError
 from utils.logging_utils import get_logger, log_event
 
@@ -26,6 +27,11 @@ logger = get_logger(__name__)
 MAX_CANDIDATE_DOCS = 10
 MAX_CANDIDATE_SECTIONS = 20
 MAX_KEYWORD_FALLBACK_DOCS = 10
+MAX_VECTOR_CANDIDATES = 15
+# EMBED_MODEL imported from index_builder.py, not redefined here — the
+# question and every indexed section need to be embedded with the same
+# model to be comparable via VECTOR_COSINE_SIMILARITY, so this can't drift
+# out of sync with what indexing actually used.
 
 
 @dataclass
@@ -124,6 +130,28 @@ Return ONLY JSON: {{"doc_ids": [1, 2]}}"""
         params=candidate_doc_ids,
     ).collect()
 
+    # Hybrid retrieval: union in sections found by vector/semantic
+    # similarity to the question, independent of which documents Stage 1
+    # routed to — a relevant section can live in a document Stage 1's
+    # summary-based judgment didn't select at all (a summary is a
+    # compression; semantically similar wording can score low against it
+    # even when the underlying section is exactly what's needed). This
+    # widens the pool the section-routing LLM call below judges, so that
+    # call effectively reranks/filters a broader candidate set rather
+    # than just Stage 1's narrower pick.
+    known_node_ids = {s["NODE_ID"] for s in section_nodes}
+    vector_node_ids = [
+        nid for nid in _vector_search_section_ids(session, question, schema)
+        if nid not in known_node_ids
+    ]
+    if vector_node_ids:
+        vec_placeholders = ", ".join(["?"] * len(vector_node_ids))
+        section_nodes = section_nodes + session.sql(
+            f"""SELECT NODE_ID, DOC_ID, NODE_TITLE, NODE_SUMMARY, NODE_TEXT_REF
+                FROM {schema}.DOCUMENT_INDEX WHERE NODE_ID IN ({vec_placeholders})""",
+            params=vector_node_ids,
+        ).collect()
+
     section_summary_text = "\n".join(
         f"[node_id={s['NODE_ID']}] {s['NODE_TITLE']}: {s['NODE_SUMMARY']}" for s in section_nodes
     )
@@ -185,8 +213,11 @@ Return ONLY JSON: {{"node_ids": [1, 2]}}"""
 Format the answer as a bulleted list, one point per bullet, with a blank
 line between bullets — use real line breaks, never the literal characters
 backslash-n. Cite sources inline using the bracketed number shown before
-each excerpt, e.g. [1]. If the excerpts don't fully answer the question,
-say so explicitly rather than guessing.
+each excerpt, e.g. [1]. When the answer draws on multiple dated
+meetings/events, order the bullets chronologically, oldest first, using
+whatever dates appear in the excerpts — do not leave the order
+unspecified or reverse-chronological. If the excerpts don't fully answer
+the question, say so explicitly rather than guessing.
 
 QUESTION: {question}
 
@@ -220,6 +251,32 @@ def _validate_question(question: str):
         raise ValueError("Question cannot be empty")
     if len(question) > 2000:
         raise ValueError("Question too long (max 2000 chars)")
+
+
+def _vector_search_section_ids(session, question: str, schema: str) -> List[int]:
+    """
+    Finds sections whose embedding is semantically closest to the
+    question, project-wide — independent of Stage 1's document routing,
+    so it can surface a relevant section in a document Stage 1's
+    summary-based judgment didn't select at all. Returns [] gracefully
+    if NODE_EMBEDDING isn't populated yet (e.g. before a project's first
+    reindex after this feature was added — all NULL, nothing to compare
+    against) or AI_EMBED isn't available on this account: vector search
+    is an additive retrieval signal, not a hard requirement.
+    """
+    try:
+        rows = session.sql(
+            f"""SELECT NODE_ID
+                FROM {schema}.DOCUMENT_INDEX
+                WHERE NODE_LEVEL = 'section' AND NODE_EMBEDDING IS NOT NULL
+                ORDER BY VECTOR_COSINE_SIMILARITY(NODE_EMBEDDING, AI_EMBED(?, ?)) DESC
+                LIMIT {MAX_VECTOR_CANDIDATES}""",
+            params=[EMBED_MODEL, question],
+        ).collect()
+        return [r["NODE_ID"] for r in rows]
+    except Exception:
+        logger.warning("EVENT=VECTOR_SEARCH_FAILED", exc_info=True)
+        return []
 
 
 def _keyword_fallback_doc_ids(session, project: ProjectConfig, question: str, schema: str) -> List[int]:

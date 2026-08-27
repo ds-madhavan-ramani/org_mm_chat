@@ -175,6 +175,9 @@ def run(session, project_code, project_name, description,
                                                                -- paragraph (see ORG_MEETING_MINUTES profile)
                                                                -- can run well past a short gloss
               NODE_TEXT_REF            VARCHAR(50),             -- "start:end" offsets into RAW_TEXT
+              NODE_EMBEDDING            VECTOR(FLOAT, 768),      -- section-level only (NULL for
+                                                                  -- 'document' nodes); AI_EMBED('snowflake-arctic-embed-m', ...)
+                                                                  -- at index time, for vector/semantic retrieval — see query_engine.py
               CREATED_AT                TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
             )""",
     ]

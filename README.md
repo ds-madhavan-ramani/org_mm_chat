@@ -173,10 +173,13 @@ than through OCR — see `python/ingestion/xlsx_parser.py`.
 
 ### How retrieval works, and getting more thorough answers
 
-Retrieval is a two-stage LLM tree search, not full-text/vector RAG: an
-answer only ever draws from documents and sections the model *chose* to
-route to, not the whole corpus. `query_engine.py`'s module-level constants
-control how much evidence a question can pull in:
+Retrieval is a two-stage LLM tree search — document-level, then
+section-level — augmented with two additional signals that widen each
+stage's candidate pool before the LLM judges it: a literal keyword search
+and a vector/semantic similarity search. An answer only ever draws from
+documents and sections one of these signals surfaced, not the whole
+corpus. `query_engine.py`'s module-level constants control how much
+evidence a question can pull in:
 
 - `MAX_CANDIDATE_DOCS` (10) / `MAX_CANDIDATE_SECTIONS` (20) — the caps on
   how many documents and sections, respectively, one question's answer can
@@ -202,6 +205,37 @@ control how much evidence a question can pull in:
   document (still bounded by `MAX_CANDIDATE_SECTIONS`) rather than
   returning "no specific section answers that question" — an
   over-conservative section pick shouldn't produce an empty answer.
+- **Hybrid retrieval + reranking**: `DOCUMENT_INDEX.NODE_EMBEDDING`
+  (`VECTOR(FLOAT, 768)`, section-level only) holds each section's
+  semantic embedding, computed at index time via
+  `AI_EMBED('snowflake-arctic-embed-m', title + summary)`
+  (`index_builder.py`'s `EMBED_MODEL`, imported by `query_engine.py` so
+  the two can't drift out of sync — comparing vectors from different
+  models is meaningless). At query time, `_vector_search_section_ids()`
+  embeds the question the same way and finds the top
+  `MAX_VECTOR_CANDIDATES` (15) sections by `VECTOR_COSINE_SIMILARITY`,
+  **project-wide** — independent of which documents Stage 1's
+  summary-based routing selected, since a document's summary is a lossy
+  compression that can miss a semantically-relevant section entirely even
+  when the wording doesn't match well. Those sections are unioned into
+  Stage 2's candidate pool before the section-routing LLM call judges it
+  — that call is effectively a **reranking** pass over a broader,
+  hybrid-sourced pool (summary-routed + vector-found) rather than only
+  ever seeing Stage 1's narrower pick.
+  - Both the embedding-at-index-time and the search-at-query-time calls
+    degrade gracefully if unavailable: `index_builder.py` tries
+    `AI_EMBED` once per indexing run and disables it for the rest of
+    that run on the first failure (not per-document — no reason to fail
+    identically ~90 times if it's an account-wide capability gap),
+    falling back to indexing that section without an embedding rather
+    than failing the document; `_vector_search_section_ids()` catches
+    any failure and returns `[]`, silently reducing to the two
+    pre-existing signals. Neither ever raises up into the user-facing
+    answer.
+  - **Sections indexed before this feature shipped have `NODE_EMBEDDING
+    = NULL`** and won't be found by vector search until reindexed — the
+    schema migration only adds the column, it can't retroactively embed
+    existing rows. Data Sources → Index → **Rebuild all** to backfill.
 - The `ORG_MEETING_MINUTES` segmentation prompt (`index_builder.py`) asks
   the indexing model to write a thorough paragraph per section — quoting
   reference codes/IDs/acronyms verbatim rather than paraphrasing them —
@@ -237,6 +271,14 @@ control how much evidence a question can pull in:
     future `ALTER COLUMN ... SET DATA TYPE` migration added to the
     provisioning notebook's "Schema migrations" cell on this account
     will need the same explicit `COLLATE 'en-ci'`.
+- The synthesis prompt instructs the model to order bullets
+  chronologically (oldest first) when an answer spans multiple dated
+  meetings/events, using whatever dates appear in the excerpts —
+  `DOCUMENT_INDEX`/`RAW_DOCUMENTS` has no structured, reliably-populated
+  date column to sort by in code (`RAW_DOCUMENTS.DOCUMENT_DATE` exists
+  but is never actually set at ingest time), so this is a prompt
+  instruction, not a deterministic guarantee the way citation numbering
+  is.
 
 ## Known account-level gotchas (Streamlit-in-Snowflake)
 
