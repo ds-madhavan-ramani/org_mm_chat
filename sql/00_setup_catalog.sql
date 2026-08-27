@@ -161,6 +161,7 @@ def run(session, project_code, project_name, description,
               DOCUMENT_DATE             DATE,                    -- best-effort extracted date
               RAW_TEXT                   VARCHAR(16777216),
               SOURCE_HASH                 VARCHAR(64),             -- SHA256 of raw_text, idempotency
+              SOURCE_URL                   VARCHAR(2000),            -- SharePoint webUrl, NULL for uploads
               PARSED_AT                    TIMESTAMP_NTZ,
               CREATED_AT                    TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
             )""",

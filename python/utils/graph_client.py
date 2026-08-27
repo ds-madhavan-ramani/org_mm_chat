@@ -44,6 +44,7 @@ class DriveItem:
     is_folder: bool
     size_bytes: int = 0
     last_modified: Optional[str] = None
+    web_url: Optional[str] = None   # SharePoint Online view URL — for citation links
 
 
 def _get_access_token(tenant_id: str, client_id: str, client_secret: str) -> str:
@@ -125,6 +126,7 @@ def resolve_folder(token: str, folder_url: str) -> DriveItem:
         is_folder="folder" in data,
         size_bytes=data.get("size", 0),
         last_modified=data.get("lastModifiedDateTime"),
+        web_url=data.get("webUrl"),
     )
 
 
@@ -156,6 +158,7 @@ def list_folder(
             is_folder="folder" in entry,
             size_bytes=entry.get("size", 0),
             last_modified=entry.get("lastModifiedDateTime"),
+            web_url=entry.get("webUrl"),
         )
         if item.is_folder:
             folder_children.append(item)
