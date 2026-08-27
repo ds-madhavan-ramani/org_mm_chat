@@ -14,10 +14,18 @@ from dataclasses import dataclass, field
 from typing import Dict, List
 
 from config import ProjectConfig, DATABASE, CATALOG_SCHEMA
-from utils.cortex_client import complete, complete_json
+from utils.cortex_client import complete, complete_json, CortexError
 from utils.logging_utils import get_logger, log_event
 
 logger = get_logger(__name__)
+
+# How much evidence a single question can pull from. Higher = more complete
+# answers for broad/thematic questions spanning many meetings, at the cost
+# of a longer, slower, more expensive synthesis call per question. Tune
+# here rather than as magic numbers buried in the routing prompts below.
+MAX_CANDIDATE_DOCS = 10
+MAX_CANDIDATE_SECTIONS = 20
+MAX_KEYWORD_FALLBACK_DOCS = 10
 
 
 @dataclass
@@ -85,7 +93,8 @@ def search(session, project: ProjectConfig, question: str, use_cache: bool = Tru
     )
     routing_prompt = f"""Given this question and list of documents, return the
 doc_id values (as a JSON list of integers) of documents likely to contain the
-answer. Return at most 5. If none look relevant, return an empty list.
+answer. Return at most {MAX_CANDIDATE_DOCS}. If none look relevant, return an
+empty list.
 
 QUESTION: {question}
 
@@ -95,10 +104,16 @@ DOCUMENTS:
 Return ONLY JSON: {{"doc_ids": [1, 2]}}"""
 
     routing = complete_json(session, project.active_model, routing_prompt)
-    candidate_doc_ids = routing.get("doc_ids", [])[:5]
+    candidate_doc_ids = routing.get("doc_ids", [])[:MAX_CANDIDATE_DOCS]
 
     if not candidate_doc_ids:
-        return AnswerResult(answer="I couldn't find a document relevant to that question.")
+        # Document-level summaries are broad glosses of a whole meeting —
+        # a specific code/ID/acronym (e.g. "A9605") will rarely appear in
+        # one even when it's right there in the raw text. Fall back to a
+        # literal keyword search instead of giving up outright.
+        candidate_doc_ids = _keyword_fallback_doc_ids(session, project, question, schema)
+        if not candidate_doc_ids:
+            return AnswerResult(answer="I couldn't find a document relevant to that question.")
 
     # Stage 2: within selected documents, pick relevant section(s)
     placeholders = ", ".join(["?"] * len(candidate_doc_ids))
@@ -114,7 +129,7 @@ Return ONLY JSON: {{"doc_ids": [1, 2]}}"""
     )
     section_prompt = f"""Given this question and list of document sections,
 return the node_id values (JSON list of integers) of sections likely to
-contain the answer. Return at most 8.
+contain the answer. Return at most {MAX_CANDIDATE_SECTIONS}.
 
 QUESTION: {question}
 
@@ -124,10 +139,18 @@ SECTIONS:
 Return ONLY JSON: {{"node_ids": [1, 2]}}"""
 
     section_routing = complete_json(session, project.active_model, section_prompt)
-    node_ids = section_routing.get("node_ids", [])[:8]
+    node_ids = section_routing.get("node_ids", [])[:MAX_CANDIDATE_SECTIONS]
 
     if not node_ids:
-        return AnswerResult(answer="I found relevant documents but no specific section answers that question.")
+        # Section routing found nothing specific within otherwise-relevant
+        # documents — rather than give up, fall back to every section in
+        # those documents (still bounded by the section cap) instead of
+        # depending on the routing model having correctly picked among
+        # them; an over-conservative section pick shouldn't produce an
+        # empty answer when the document itself was judged relevant.
+        node_ids = [s["NODE_ID"] for s in section_nodes][:MAX_CANDIDATE_SECTIONS]
+        if not node_ids:
+            return AnswerResult(answer="I found relevant documents but no specific section answers that question.")
 
     # Stage 3: pull raw text for selected sections and synthesize
     placeholders = ", ".join(["?"] * len(node_ids))
@@ -197,6 +220,49 @@ def _validate_question(question: str):
         raise ValueError("Question cannot be empty")
     if len(question) > 2000:
         raise ValueError("Question too long (max 2000 chars)")
+
+
+def _keyword_fallback_doc_ids(session, project: ProjectConfig, question: str, schema: str) -> List[int]:
+    """
+    Extracts literal search terms (codes, IDs, acronyms, quoted phrases)
+    from the question and searches RAW_TEXT for them directly — a
+    complement to summary-based routing, not a replacement: a document
+    summary is a compression that can't enumerate every code/ID it
+    contains, so a question asking for one by name needs an exact-text
+    search, not a "does this summary sound relevant" judgment. Returns []
+    on any failure (extraction or search) so the caller's existing
+    "couldn't find a relevant document" message still applies.
+    """
+    extract_prompt = f"""Extract up to 3 short literal search terms from this
+question — specific codes, IDs, acronyms, or quoted phrases someone would
+search for verbatim in a document. Skip generic/common words. If there are
+no such specific terms, return an empty list.
+
+QUESTION: {question}
+
+Return ONLY JSON: {{"terms": ["term1", "term2"]}}"""
+    try:
+        extracted = complete_json(session, project.active_model, extract_prompt)
+    except CortexError:
+        logger.warning("EVENT=KEYWORD_FALLBACK_EXTRACT_FAILED question=%r", question)
+        return []
+
+    terms = [t.strip() for t in extracted.get("terms", []) if t and t.strip()]
+    if not terms:
+        return []
+
+    conditions = " OR ".join(["RAW_TEXT ILIKE ?"] * len(terms))
+    params = [f"%{t}%" for t in terms]
+    rows = session.sql(
+        f"""SELECT DISTINCT DOC_ID FROM {schema}.RAW_DOCUMENTS
+            WHERE {conditions} LIMIT {MAX_KEYWORD_FALLBACK_DOCS}""",
+        params=params,
+    ).collect()
+    doc_ids = [r["DOC_ID"] for r in rows]
+    if doc_ids:
+        log_event(logger, "KEYWORD_FALLBACK_HIT", project.project_code,
+                  terms=terms, doc_count=len(doc_ids))
+    return doc_ids
 
 
 def _check_cache(session, project: ProjectConfig, query_hash: str) -> AnswerResult | None:

@@ -171,6 +171,46 @@ than through OCR — see `python/ingestion/xlsx_parser.py`.
   useful for confirming a SharePoint sync actually picked up new/changed
   files.
 
+### How retrieval works, and getting more thorough answers
+
+Retrieval is a two-stage LLM tree search, not full-text/vector RAG: an
+answer only ever draws from documents and sections the model *chose* to
+route to, not the whole corpus. `query_engine.py`'s module-level constants
+control how much evidence a question can pull in:
+
+- `MAX_CANDIDATE_DOCS` (10) / `MAX_CANDIDATE_SECTIONS` (20) — the caps on
+  how many documents and sections, respectively, one question's answer can
+  draw from. Raise these for more complete answers on broad/thematic
+  questions spanning many meetings (e.g. "all references to X across the
+  minutes") — at the cost of a longer, slower, more expensive synthesis
+  call per question, since every extra section adds up to
+  `MAX_SECTION_CHARS` (8000, a `PROJECTS` column) of excerpt text to the
+  final prompt.
+- **Exact code/ID/acronym lookups** (e.g. "find all references to A9605")
+  are a different retrieval need than thematic questions, and document
+  routing alone handles them poorly: a document's summary is a broad
+  gloss of an entire meeting and won't reliably contain every specific
+  code mentioned in the raw text, even a very good one. When document
+  routing returns nothing, `search()` now falls back to a literal
+  `RAW_TEXT ILIKE` search on terms the model extracts from the question
+  (`_keyword_fallback_doc_ids`) — a genuinely irrelevant question still
+  correctly returns "I couldn't find a document relevant to that
+  question," but a specific-code question that summary-routing missed
+  gets a second chance via exact text match.
+- Similarly, when a document is judged relevant but section-routing picks
+  no sections within it, `search()` falls back to every section in that
+  document (still bounded by `MAX_CANDIDATE_SECTIONS`) rather than
+  returning "no specific section answers that question" — an
+  over-conservative section pick shouldn't produce an empty answer.
+- The `ORG_MEETING_MINUTES` segmentation prompt (`index_builder.py`) asks
+  the indexing model to write a thorough paragraph per section — quoting
+  reference codes/IDs/acronyms verbatim rather than paraphrasing them —
+  since routing accuracy depends entirely on how much a section's summary
+  actually captures. **Takes a full reindex to apply to already-indexed
+  documents** — Data Sources → Index → **Rebuild all**, which re-runs
+  every document through Cortex again (91 documents ≈ 91 LLM calls; not
+  free, and not instant).
+
 ## Known account-level gotchas (Streamlit-in-Snowflake)
 
 - **External Access Integrations must be attached explicitly, on every

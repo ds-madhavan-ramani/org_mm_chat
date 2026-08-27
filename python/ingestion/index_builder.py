@@ -60,15 +60,21 @@ minutes, often one sheet per lease year or per meeting).
 
 Segment by meeting where the text allows it — one section per distinct
 meeting date, or one section per "=== Sheet: ... ===" block for spreadsheet
-input. Each section's summary should call out the meeting date, attendees if
-listed, and the key agenda items, decisions, and action items raised — the
-details a reader would search for later. Do not force sections that don't
-exist in the text; if the document has no clear per-meeting breaks, fall
-back to its natural headings/topic breaks instead.
+input. Each section's summary should be detailed enough for a reader to
+judge relevance without re-reading the source: call out the meeting date,
+attendees if listed, and EVERY agenda item, decision, and action item
+raised — write a thorough paragraph, not a one-line gloss. Quote specific
+reference codes, action IDs, system/asset names, and acronyms VERBATIM
+exactly as written in the source (e.g. "Action 194", "A9605", "TCMS",
+"AOWP") rather than paraphrasing or omitting them — someone searching for
+one of these terms later needs to find it in the summary text itself, not
+just its general meaning. Do not force sections that don't exist in the
+text; if the document has no clear per-meeting breaks, fall back to its
+natural headings/topic breaks instead.
 
 Return ONLY valid JSON in this shape, no commentary:
 {{
-  "document_summary": "2-3 sentence summary of the whole document (date range covered, overall purpose)",
+  "document_summary": "3-5 sentence summary of the whole document (date range covered, overall purpose, and any recurring topics, systems, or codes discussed across meetings)",
   "sections": [
     {{"title": "e.g. 'Meeting — 12 Mar 2024' or a sheet/topic name", "summary": "...", "start": 0, "end": 1234}}
   ]
