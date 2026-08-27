@@ -72,7 +72,17 @@ def _strip_leading_markdown_fence(text: str) -> str:
     return text
 
 
-def complete_json(session, model: str, prompt: str, max_tokens: int = 4096) -> dict:
+_JSON_RETRY_SUFFIX = """
+
+IMPORTANT: Your previous response was not valid JSON syntax. A common
+cause is an unescaped double-quote character inside a string value (e.g.
+quoting what someone said verbatim) — every " that appears INSIDE a
+string value must be escaped as \\". Return ONLY the corrected JSON,
+no commentary, with every internal double-quote properly escaped."""
+
+
+def complete_json(session, model: str, prompt: str, max_tokens: int = 4096,
+                   _is_retry: bool = False) -> dict:
     """Call complete() and parse the response as JSON, with a clear error on failure."""
     raw = complete(session, model, prompt, max_tokens=max_tokens)
 
@@ -106,11 +116,23 @@ def complete_json(session, model: str, prompt: str, max_tokens: int = 4096) -> d
             continue
         break  # some other non-dict, non-str JSON value (e.g. a list) — give up
 
-    # Either the final parse failed outright, or it kept resolving to
-    # something that's never a dict (e.g. a genuine refusal message).
-    # Include a raw preview in the raised message itself (not just the
-    # server-side log) so it's visible directly in the Streamlit error
-    # card, not just Snowsight's server-side logs.
+    # A genuine JSON syntax error (not just fencing/double-encoding, which
+    # the loop above already handles) — most often an unescaped quote
+    # inside a quoted statement in the source text — isn't something
+    # re-parsing the same text can fix. Retry the LLM call itself once
+    # with an explicit corrective instruction, since resampling plus a
+    # nudge about escaping is the standard mitigation, before giving up.
+    # Bounded to one retry (_is_retry guards against recursing further).
+    if last_error is not None and not _is_retry:
+        logger.warning("EVENT=JSON_PARSE_RETRY response_preview=%r", raw[:500])
+        return complete_json(session, model, prompt + _JSON_RETRY_SUFFIX,
+                              max_tokens=max_tokens, _is_retry=True)
+
+    # Either the final parse failed outright (even after a retry), or it
+    # kept resolving to something that's never a dict (e.g. a genuine
+    # refusal message). Include a raw preview in the raised message itself
+    # (not just the server-side log) so it's visible directly in the
+    # Streamlit error card, not just Snowsight's server-side logs.
     logger.error("EVENT=JSON_PARSE_ERROR response_preview=%r", raw[:500])
     if last_error is not None:
         raise CortexError(
