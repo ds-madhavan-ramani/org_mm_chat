@@ -131,6 +131,25 @@ def _granularity_instruction(project: ProjectConfig) -> str:
     )
 
 
+# The indexing response's JSON grows with how many sections a document
+# gets split into — complete_json()'s 4096-token default (sized for
+# shorter, more conversational chat responses) is routinely too small
+# once a document has many meetings/sheets, and far too small under
+# DETAILED granularity, which deliberately asks for more, finer-grained
+# sections. Indexing is a batch job, not a latency-sensitive per-question
+# call, so there's no real cost to budgeting generously here — complete_json()
+# still retries with an even larger budget on its own if a response gets
+# truncated anyway.
+INDEXING_MAX_TOKENS = {
+    "STANDARD": 8192,
+    "DETAILED": 12000,
+}
+
+
+def _indexing_max_tokens(project: ProjectConfig) -> int:
+    return INDEXING_MAX_TOKENS.get(project.segmentation_granularity, 8192)
+
+
 def build_index_for_project(session, project: ProjectConfig,
                              doc_ids: Optional[List[int]] = None,
                              rebuild: bool = False) -> IndexResult:
@@ -201,7 +220,8 @@ def _index_one_document(session, project: ProjectConfig, doc_id: int, file_name:
                                 prompt_template.format(
                                     text=text,
                                     granularity_instruction=_granularity_instruction(project),
-                                ))
+                                ),
+                                max_tokens=_indexing_max_tokens(project))
 
         root_id = session.sql(
             f"""INSERT INTO {schema}.DOCUMENT_INDEX

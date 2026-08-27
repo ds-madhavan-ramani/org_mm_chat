@@ -80,6 +80,19 @@ quoting what someone said verbatim) — every " that appears INSIDE a
 string value must be escaped as \\". Return ONLY the corrected JSON,
 no commentary, with every internal double-quote properly escaped."""
 
+# Cap for the token budget a truncation retry can request — well within
+# what Cortex models on this account support, so the retry call itself
+# doesn't fail for asking too much.
+MAX_JSON_RETRY_TOKENS = 16000
+
+
+def _is_truncation_error(error: json.JSONDecodeError, text: str) -> bool:
+    """True when the response looks like it was cut off mid-value (hit
+    max_tokens) rather than a genuine syntax mistake (e.g. an unescaped
+    quote) — the two need different fixes: a bigger token budget vs. a
+    corrective instruction asking for the same length of output again."""
+    return "Unterminated string" in error.msg or error.pos >= len(text) - 2
+
 
 def complete_json(session, model: str, prompt: str, max_tokens: int = 4096,
                    _is_retry: bool = False) -> dict:
@@ -124,6 +137,17 @@ def complete_json(session, model: str, prompt: str, max_tokens: int = 4096,
     # nudge about escaping is the standard mitigation, before giving up.
     # Bounded to one retry (_is_retry guards against recursing further).
     if last_error is not None and not _is_retry:
+        if _is_truncation_error(last_error, candidate) and max_tokens < MAX_JSON_RETRY_TOKENS:
+            retry_max_tokens = min(max_tokens * 2, MAX_JSON_RETRY_TOKENS)
+            logger.warning(
+                "EVENT=JSON_PARSE_RETRY_TRUNCATED max_tokens=%d->%d response_tail=%r",
+                max_tokens, retry_max_tokens, raw[-200:],
+            )
+            # Same prompt, bigger budget — a corrective instruction about
+            # quote-escaping wouldn't fix a response that was simply cut
+            # off before it finished.
+            return complete_json(session, model, prompt,
+                                  max_tokens=retry_max_tokens, _is_retry=True)
         logger.warning("EVENT=JSON_PARSE_RETRY response_preview=%r", raw[:500])
         return complete_json(session, model, prompt + _JSON_RETRY_SUFFIX,
                               max_tokens=max_tokens, _is_retry=True)
