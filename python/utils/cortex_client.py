@@ -54,14 +54,21 @@ def complete(session, model: str, prompt: str, max_tokens: int = 4096,
     raise CortexError(f"Cortex call failed after {MAX_RETRIES} attempts: {last_err}")
 
 
-def _strip_markdown_fence(text: str) -> str:
-    """Strips a ```json ... ``` (or bare ```...```) code fence wrapping the
-    text, if present. A no-op if there's no fence."""
+_json_decoder = json.JSONDecoder()
+
+
+def _strip_leading_markdown_fence(text: str) -> str:
+    """Strips a leading ```json (or bare ```) code-fence marker, if
+    present. Only the *opening* fence needs handling here — raw_decode()
+    below parses just the first complete JSON value and ignores anything
+    after it, so a stray closing fence (or trailing prose past it) doesn't
+    need to be located/stripped separately."""
     text = text.strip()
     if text.startswith("```"):
-        text = text.strip("`").strip()
+        text = text[3:]
         if text.lower().startswith("json"):
-            text = text[4:].strip()
+            text = text[4:]
+        text = text.lstrip()
     return text
 
 
@@ -69,21 +76,25 @@ def complete_json(session, model: str, prompt: str, max_tokens: int = 4096) -> d
     """Call complete() and parse the response as JSON, with a clear error on failure."""
     raw = complete(session, model, prompt, max_tokens=max_tokens)
 
-    # Some models, asked to "return ONLY valid JSON", escape their entire
-    # fenced answer as a JSON *string* instead of emitting the object
-    # directly — the raw text is '"```json\n{...}\n```"' (a JSON string
-    # whose content is itself the fenced JSON block), not '{...}' or even
-    # '```json\n{...}\n```' directly. A single fence-strip-then-parse pass
-    # can't handle this: the fence markers only become visible *after*
-    # unwrapping the outer string, so each unwrap needs its own fence-strip
-    # before the next parse attempt, not just the first one.
+    # Models don't reliably follow "return ONLY valid JSON, no commentary".
+    # Two distinct failure shapes seen in production:
+    #   (a) the whole fenced answer escaped as one JSON string —
+    #       '"```json\n{...}\n```"' — rather than the object directly;
+    #   (b) a valid JSON object followed by a prose explanation after the
+    #       closing fence, e.g. '```json\n{...}\n```\n\nBased on my
+    #       review...' — plain json.loads() rejects this as "Extra data"
+    #       even though the JSON itself is perfectly valid.
+    # raw_decode() parses just the first complete JSON value and ignores
+    # anything trailing it, handling (b) directly; the loop below
+    # additionally unwraps (a) by re-parsing when the result is itself a
+    # JSON-encoded string.
     candidate = raw
     last_error: Optional[json.JSONDecodeError] = None
     parsed = None
     for _ in range(3):  # bounded: a couple of unwrap levels is plenty
-        cleaned = _strip_markdown_fence(candidate)
+        cleaned = _strip_leading_markdown_fence(candidate)
         try:
-            parsed = json.loads(cleaned)
+            parsed, _end_index = _json_decoder.raw_decode(cleaned)
         except json.JSONDecodeError as e:
             last_error = e
             parsed = None
@@ -95,8 +106,8 @@ def complete_json(session, model: str, prompt: str, max_tokens: int = 4096) -> d
             continue
         break  # some other non-dict, non-str JSON value (e.g. a list) — give up
 
-    # Either the final json.loads() failed outright, or it kept resolving
-    # to something that's never a dict (e.g. a genuine refusal message).
+    # Either the final parse failed outright, or it kept resolving to
+    # something that's never a dict (e.g. a genuine refusal message).
     # Include a raw preview in the raised message itself (not just the
     # server-side log) so it's visible directly in the Streamlit error
     # card, not just Snowsight's server-side logs.
