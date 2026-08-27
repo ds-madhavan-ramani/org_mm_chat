@@ -54,6 +54,25 @@ CREATE TABLE IF NOT EXISTS PROJECTS (
     -- tree index. 'GENERIC' works for most document types. Projects can
     -- register a specialized one (see 02_project_schema_template.sql notes).
     SEGMENTATION_PROFILE           VARCHAR(50)  DEFAULT 'GENERIC',
+    -- 'STANDARD' (one section per natural break, e.g. per meeting) or
+    -- 'DETAILED' (push the indexing model to further split each break into
+    -- per-topic/per-agenda-item sections) — see index_builder.py's
+    -- SEGMENTATION_GRANULARITY_INSTRUCTIONS. Orthogonal to
+    -- SEGMENTATION_PROFILE: any profile can run at either granularity.
+    SEGMENTATION_GRANULARITY        VARCHAR(20)  DEFAULT 'STANDARD',
+
+    -- Retrieval mechanism toggles — not every LLM Wiki deployment needs
+    -- every mechanism (see README "How retrieval works" for the full list
+    -- and what each one costs). MAX_CANDIDATE_DOCS is clamped to [5, 10]
+    -- in query_engine.py, not enforced by a DB CHECK constraint — Snowflake
+    -- accepts CHECK syntax but never actually enforces it.
+    ENABLE_RERANKING                 BOOLEAN      DEFAULT TRUE,   -- LLM judges/filters the section
+                                                                   -- candidate pool before synthesis,
+                                                                   -- vs. using it directly (cheaper/faster)
+    ENABLE_VECTOR_SEARCH              BOOLEAN      DEFAULT FALSE,  -- AI_EMBED-based semantic search as a
+                                                                   -- third retrieval signal (needs a
+                                                                   -- reindex to populate NODE_EMBEDDING)
+    MAX_CANDIDATE_DOCS                 INT          DEFAULT 10,     -- clamped to [5, 10] in query_engine.py
 
     STATUS                          VARCHAR(20)  DEFAULT 'ACTIVE',  -- ACTIVE | ARCHIVED
     CREATED_BY                       VARCHAR(200),

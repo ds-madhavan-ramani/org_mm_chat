@@ -24,6 +24,10 @@ logger = get_logger(__name__)
 # answers for broad/thematic questions spanning many meetings, at the cost
 # of a longer, slower, more expensive synthesis call per question. Tune
 # here rather than as magic numbers buried in the routing prompts below.
+# The document-routing cap is per-project (PROJECTS.MAX_CANDIDATE_DOCS,
+# clamped to [5, 10] by ProjectConfig.clamped_max_candidate_docs) — this
+# constant is only the fallback used by prompt text before that value is
+# known within search().
 MAX_CANDIDATE_DOCS = 10
 MAX_CANDIDATE_SECTIONS = 20
 MAX_KEYWORD_FALLBACK_DOCS = 10
@@ -94,12 +98,13 @@ def search(session, project: ProjectConfig, question: str, use_cache: bool = Tru
                     "Trigger a rebuild from the Data Sources page."),
         )
 
+    max_candidate_docs = project.clamped_max_candidate_docs
     doc_summary_text = "\n".join(
         f"[doc_id={d['DOC_ID']}] {d['NODE_TITLE']}: {d['NODE_SUMMARY']}" for d in doc_nodes
     )
     routing_prompt = f"""Given this question and list of documents, return the
 doc_id values (as a JSON list of integers) of documents likely to contain the
-answer. Return at most {MAX_CANDIDATE_DOCS}. If none look relevant, return an
+answer. Return at most {max_candidate_docs}. If none look relevant, return an
 empty list.
 
 QUESTION: {question}
@@ -110,7 +115,7 @@ DOCUMENTS:
 Return ONLY JSON: {{"doc_ids": [1, 2]}}"""
 
     routing = complete_json(session, project.active_model, routing_prompt)
-    candidate_doc_ids = routing.get("doc_ids", [])[:MAX_CANDIDATE_DOCS]
+    candidate_doc_ids = routing.get("doc_ids", [])[:max_candidate_docs]
 
     if not candidate_doc_ids:
         # Document-level summaries are broad glosses of a whole meeting —
@@ -130,32 +135,40 @@ Return ONLY JSON: {{"doc_ids": [1, 2]}}"""
         params=candidate_doc_ids,
     ).collect()
 
-    # Hybrid retrieval: union in sections found by vector/semantic
-    # similarity to the question, independent of which documents Stage 1
-    # routed to — a relevant section can live in a document Stage 1's
-    # summary-based judgment didn't select at all (a summary is a
-    # compression; semantically similar wording can score low against it
-    # even when the underlying section is exactly what's needed). This
-    # widens the pool the section-routing LLM call below judges, so that
-    # call effectively reranks/filters a broader candidate set rather
-    # than just Stage 1's narrower pick.
-    known_node_ids = {s["NODE_ID"] for s in section_nodes}
-    vector_node_ids = [
-        nid for nid in _vector_search_section_ids(session, question, schema)
-        if nid not in known_node_ids
-    ]
-    if vector_node_ids:
-        vec_placeholders = ", ".join(["?"] * len(vector_node_ids))
-        section_nodes = section_nodes + session.sql(
-            f"""SELECT NODE_ID, DOC_ID, NODE_TITLE, NODE_SUMMARY, NODE_TEXT_REF
-                FROM {schema}.DOCUMENT_INDEX WHERE NODE_ID IN ({vec_placeholders})""",
-            params=vector_node_ids,
-        ).collect()
+    # Hybrid retrieval (optional, PROJECTS.ENABLE_VECTOR_SEARCH): union in
+    # sections found by vector/semantic similarity to the question,
+    # independent of which documents Stage 1 routed to — a relevant
+    # section can live in a document Stage 1's summary-based judgment
+    # didn't select at all (a summary is a compression; semantically
+    # similar wording can score low against it even when the underlying
+    # section is exactly what's needed). This widens the pool the
+    # section-routing LLM call below judges, so that call effectively
+    # reranks/filters a broader candidate set rather than just Stage 1's
+    # narrower pick.
+    if project.enable_vector_search:
+        known_node_ids = {s["NODE_ID"] for s in section_nodes}
+        vector_node_ids = [
+            nid for nid in _vector_search_section_ids(session, question, schema)
+            if nid not in known_node_ids
+        ]
+        if vector_node_ids:
+            vec_placeholders = ", ".join(["?"] * len(vector_node_ids))
+            section_nodes = section_nodes + session.sql(
+                f"""SELECT NODE_ID, DOC_ID, NODE_TITLE, NODE_SUMMARY, NODE_TEXT_REF
+                    FROM {schema}.DOCUMENT_INDEX WHERE NODE_ID IN ({vec_placeholders})""",
+                params=vector_node_ids,
+            ).collect()
 
-    section_summary_text = "\n".join(
-        f"[node_id={s['NODE_ID']}] {s['NODE_TITLE']}: {s['NODE_SUMMARY']}" for s in section_nodes
-    )
-    section_prompt = f"""Given this question and list of document sections,
+    if project.enable_reranking:
+        # LLM judges/filters the (possibly vector-widened) section pool
+        # before synthesis — effectively a reranker. Optional
+        # (PROJECTS.ENABLE_RERANKING): an extra Cortex call per question,
+        # skippable when the section pool is already small/precise enough
+        # that judging it isn't worth the added latency/cost.
+        section_summary_text = "\n".join(
+            f"[node_id={s['NODE_ID']}] {s['NODE_TITLE']}: {s['NODE_SUMMARY']}" for s in section_nodes
+        )
+        section_prompt = f"""Given this question and list of document sections,
 return the node_id values (JSON list of integers) of sections likely to
 contain the answer. Return at most {MAX_CANDIDATE_SECTIONS}.
 
@@ -166,16 +179,19 @@ SECTIONS:
 
 Return ONLY JSON: {{"node_ids": [1, 2]}}"""
 
-    section_routing = complete_json(session, project.active_model, section_prompt)
-    node_ids = section_routing.get("node_ids", [])[:MAX_CANDIDATE_SECTIONS]
+        section_routing = complete_json(session, project.active_model, section_prompt)
+        node_ids = section_routing.get("node_ids", [])[:MAX_CANDIDATE_SECTIONS]
+    else:
+        node_ids = []
 
     if not node_ids:
         # Section routing found nothing specific within otherwise-relevant
-        # documents — rather than give up, fall back to every section in
-        # those documents (still bounded by the section cap) instead of
-        # depending on the routing model having correctly picked among
-        # them; an over-conservative section pick shouldn't produce an
-        # empty answer when the document itself was judged relevant.
+        # documents (or reranking is disabled) — rather than give up, fall
+        # back to every section in those documents (still bounded by the
+        # section cap) instead of depending on the routing model having
+        # correctly picked among them; an over-conservative section pick
+        # shouldn't produce an empty answer when the document itself was
+        # judged relevant.
         node_ids = [s["NODE_ID"] for s in section_nodes][:MAX_CANDIDATE_SECTIONS]
         if not node_ids:
             return AnswerResult(answer="I found relevant documents but no specific section answers that question.")

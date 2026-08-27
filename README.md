@@ -60,10 +60,17 @@ Chat answer, with cited source file names
 | SharePoint site | `https://metrotrains.sharepoint.com/sites/cabinet-mr4` |
 | SharePoint default folder | Clause 6.6(d) OCMS Review Group Minutes (link above) |
 | Segmentation profile | `ORG_MEETING_MINUTES` (per-meeting sections, not generic prose sectioning) |
+| Segmentation granularity | `STANDARD` |
+| Reranking | Enabled |
+| Vector/semantic search | Enabled |
+| Max candidate docs | `10` |
 | Warehouse / runtime | `MTMWH02`, warehouse runtime (no compute pool) |
 
 These are all set in `pipeline/00_provision_project.ipynb` Step 2 — you
 don't need to re-enter them, they're already parameterized for this project.
+The last four rows are per-project retrieval-mechanism toggles — see
+[How retrieval works, and getting more thorough answers](#how-retrieval-works-and-getting-more-thorough-answers)
+for what each one does and what it costs.
 
 ## Prerequisites
 
@@ -174,21 +181,44 @@ than through OCR — see `python/ingestion/xlsx_parser.py`.
 ### How retrieval works, and getting more thorough answers
 
 Retrieval is a two-stage LLM tree search — document-level, then
-section-level — augmented with two additional signals that widen each
-stage's candidate pool before the LLM judges it: a literal keyword search
-and a vector/semantic similarity search. An answer only ever draws from
-documents and sections one of these signals surfaced, not the whole
-corpus. `query_engine.py`'s module-level constants control how much
-evidence a question can pull in:
+section-level — with several other mechanisms layered on top. Not every
+LLM Wiki deployment needs every mechanism, so each one that has a real
+cost (extra LLM calls, a reindex, slower answers) is a per-project toggle
+on the `PROJECTS` catalog table (`MEDSOCMS.APP_CATALOG.PROJECTS`, one row
+per project — set it via the provisioning notebook's project-creation
+cell, or `UPDATE ... PROJECTS SET ... WHERE PROJECT_CODE = ...` directly).
+The rest are cheap correctness/quality fixes with no real downside, so
+they're always on rather than configurable.
 
-- `MAX_CANDIDATE_DOCS` (10) / `MAX_CANDIDATE_SECTIONS` (20) — the caps on
-  how many documents and sections, respectively, one question's answer can
-  draw from. Raise these for more complete answers on broad/thematic
-  questions spanning many meetings (e.g. "all references to X across the
-  minutes") — at the cost of a longer, slower, more expensive synthesis
-  call per question, since every extra section adds up to
-  `MAX_SECTION_CHARS` (8000, a `PROJECTS` column) of excerpt text to the
-  final prompt.
+**Always on (minimum baseline, not configurable):**
+
+| Mechanism | What it does | Code |
+|---|---|---|
+| Keyword-search fallback | Literal `RAW_TEXT ILIKE` search on terms extracted from the question, used when document-routing finds nothing — catches specific codes/IDs/acronyms a document summary wouldn't mention | `query_engine._keyword_fallback_doc_ids` |
+| All-sections fallback | Falls back to every section in a document judged relevant when section-routing (or reranking, see below) picks none — an over-conservative pick shouldn't produce an empty answer | `query_engine.search` |
+| Richer segmentation prompt | `ORG_MEETING_MINUTES` profile asks the indexing model for a thorough per-section paragraph, verbatim codes/IDs/acronyms — routing accuracy depends on how much a summary actually captures | `index_builder.PROMPTS`, `PROJECTS.SEGMENTATION_PROFILE` |
+| Chronological ordering | Synthesis prompt instructs oldest-first bullet ordering when an answer spans multiple dated meetings/events | `query_engine.search`'s `synthesis_prompt` |
+| Citation numbering | Sources are numbered deterministically in code, not left to the model, so the Sources list is always correct | `query_engine.search` |
+
+**Configurable per project (`PROJECTS` columns):**
+
+| Column | Default | What it controls | Code |
+|---|---|---|---|
+| `ENABLE_RERANKING` | `TRUE` | Whether an extra LLM call judges/filters the section candidate pool before synthesis (a "reranker"), vs. taking the whole pool directly — cheaper/faster with it off, at the cost of the LLM never narrowing down an oversized pool itself | `query_engine.search`'s `project.enable_reranking` gate |
+| `ENABLE_VECTOR_SEARCH` | `FALSE` | Whether sections are also found by embedding similarity (`AI_EMBED`) as a third retrieval signal alongside document routing and keyword search, and whether indexing computes embeddings at all — needs a reindex to backfill `NODE_EMBEDDING` on existing sections once turned on | `index_builder._index_one_document`, `query_engine._vector_search_section_ids`, gated by `project.enable_vector_search` |
+| `MAX_CANDIDATE_DOCS` | `10` | Cap on documents one question's answer can draw from — a config number, clamped to **5–10** in code (`ProjectConfig.clamped_max_candidate_docs`; Snowflake accepts `CHECK` constraint syntax but never enforces it, so this isn't a DB-level guarantee) | `query_engine.search` |
+| `SEGMENTATION_GRANULARITY` | `'STANDARD'` | `'DETAILED'` pushes the indexing prompt to split each natural break (meeting/sheet) further into one section per topic/agenda item, instead of one section per meeting — trades more, narrower sections (better precision, more indexing calls) for fewer, broader ones | `index_builder.SEGMENTATION_GRANULARITY_INSTRUCTIONS` |
+
+`MAX_CANDIDATE_SECTIONS` (20, the per-question section cap once a
+candidate pool exists) is still a `query_engine.py` module constant, not
+yet a `PROJECTS` column — raise it there directly for more complete
+answers on broad/thematic questions (e.g. "all references to X across the
+minutes"), at the cost of a longer, slower, more expensive synthesis call,
+since every extra section adds up to `MAX_SECTION_CHARS` (a `PROJECTS`
+column) of excerpt text to the final prompt.
+
+Deep-dive detail on a few of the mechanisms above:
+
 - **Exact code/ID/acronym lookups** (e.g. "find all references to A9605")
   are a different retrieval need than thematic questions, and document
   routing alone handles them poorly: a document's summary is a broad
@@ -200,47 +230,51 @@ evidence a question can pull in:
   correctly returns "I couldn't find a document relevant to that
   question," but a specific-code question that summary-routing missed
   gets a second chance via exact text match.
-- Similarly, when a document is judged relevant but section-routing picks
-  no sections within it, `search()` falls back to every section in that
-  document (still bounded by `MAX_CANDIDATE_SECTIONS`) rather than
-  returning "no specific section answers that question" — an
-  over-conservative section pick shouldn't produce an empty answer.
-- **Hybrid retrieval + reranking**: `DOCUMENT_INDEX.NODE_EMBEDDING`
+- **Hybrid retrieval + reranking** (`ENABLE_VECTOR_SEARCH` /
+  `ENABLE_RERANKING`): `DOCUMENT_INDEX.NODE_EMBEDDING`
   (`VECTOR(FLOAT, 768)`, section-level only) holds each section's
   semantic embedding, computed at index time via
-  `AI_EMBED('snowflake-arctic-embed-m', title + summary)`
+  `AI_EMBED('snowflake-arctic-embed-m', title + summary)` — only when the
+  project's `ENABLE_VECTOR_SEARCH` is on; off, indexing skips `AI_EMBED`
+  entirely and inserts sections without an embedding
   (`index_builder.py`'s `EMBED_MODEL`, imported by `query_engine.py` so
   the two can't drift out of sync — comparing vectors from different
-  models is meaningless). At query time, `_vector_search_section_ids()`
-  embeds the question the same way and finds the top
-  `MAX_VECTOR_CANDIDATES` (15) sections by `VECTOR_COSINE_SIMILARITY`,
-  **project-wide** — independent of which documents Stage 1's
-  summary-based routing selected, since a document's summary is a lossy
-  compression that can miss a semantically-relevant section entirely even
-  when the wording doesn't match well. Those sections are unioned into
-  Stage 2's candidate pool before the section-routing LLM call judges it
-  — that call is effectively a **reranking** pass over a broader,
-  hybrid-sourced pool (summary-routed + vector-found) rather than only
-  ever seeing Stage 1's narrower pick.
-  - Both the embedding-at-index-time and the search-at-query-time calls
-    degrade gracefully if unavailable: `index_builder.py` tries
-    `AI_EMBED` once per indexing run and disables it for the rest of
-    that run on the first failure (not per-document — no reason to fail
-    identically ~90 times if it's an account-wide capability gap),
-    falling back to indexing that section without an embedding rather
-    than failing the document; `_vector_search_section_ids()` catches
-    any failure and returns `[]`, silently reducing to the two
-    pre-existing signals. Neither ever raises up into the user-facing
-    answer.
-  - **Sections indexed before this feature shipped have `NODE_EMBEDDING
-    = NULL`** and won't be found by vector search until reindexed — the
-    schema migration only adds the column, it can't retroactively embed
-    existing rows. Data Sources → Index → **Rebuild all** to backfill.
+  models is meaningless). At query time, when `ENABLE_VECTOR_SEARCH` is
+  on, `_vector_search_section_ids()` embeds the question the same way and
+  finds the top `MAX_VECTOR_CANDIDATES` (15) sections by
+  `VECTOR_COSINE_SIMILARITY`, **project-wide** — independent of which
+  documents Stage 1's summary-based routing selected, since a document's
+  summary is a lossy compression that can miss a semantically-relevant
+  section entirely even when the wording doesn't match well. Those
+  sections are unioned into Stage 2's candidate pool. Then, when
+  `ENABLE_RERANKING` is on, the section-routing LLM call judges that
+  (possibly hybrid-sourced) pool — effectively a **reranking** pass over
+  summary-routed + vector-found sections together, rather than only ever
+  seeing Stage 1's narrower pick; when `ENABLE_RERANKING` is off, that
+  call is skipped and the whole pool is used directly (cheaper/faster,
+  same as the all-sections fallback above).
+  - The embedding-at-index-time and search-at-query-time calls also
+    degrade gracefully if `AI_EMBED` is unavailable even with the toggle
+    on: `index_builder.py` tries it once per indexing run and disables it
+    for the rest of that run on the first failure (not per-document — no
+    reason to fail identically ~90 times if it's an account-wide
+    capability gap), falling back to indexing that section without an
+    embedding rather than failing the document; `_vector_search_section_ids()`
+    catches any failure and returns `[]`, silently reducing to the other
+    signals. Neither ever raises up into the user-facing answer.
+  - **Sections indexed before `ENABLE_VECTOR_SEARCH` was turned on (or
+    before this feature shipped) have `NODE_EMBEDDING = NULL`** and won't
+    be found by vector search until reindexed — enabling the toggle
+    doesn't retroactively embed existing rows. Data Sources → Index →
+    **Rebuild all** to backfill.
 - The `ORG_MEETING_MINUTES` segmentation prompt (`index_builder.py`) asks
   the indexing model to write a thorough paragraph per section — quoting
   reference codes/IDs/acronyms verbatim rather than paraphrasing them —
   since routing accuracy depends entirely on how much a section's summary
-  actually captures. **Takes a full reindex to apply to already-indexed
+  actually captures. `SEGMENTATION_GRANULARITY = 'DETAILED'` layers on
+  top of any profile (orthogonal setting) to push further, splitting each
+  natural break into one section per topic/agenda item instead of one per
+  meeting. **Takes a full reindex to apply to already-indexed
   documents** — Data Sources → Index → **Rebuild all**, which re-runs
   every document through Cortex again (91 documents ≈ 91 LLM calls; not
   free, and not instant).
