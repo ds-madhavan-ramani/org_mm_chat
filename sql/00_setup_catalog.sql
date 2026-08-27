@@ -171,7 +171,9 @@ def run(session, project_code, project_name, description,
               PARENT_NODE_ID     INT,                      -- NULL for the document-level root node
               NODE_LEVEL          VARCHAR(20) NOT NULL,      -- 'document' | 'section' | 'subsection'
               NODE_TITLE            VARCHAR(500),
-              NODE_SUMMARY           VARCHAR(4000),
+              NODE_SUMMARY           VARCHAR(8000),           -- generous headroom: a thorough per-section
+                                                               -- paragraph (see ORG_MEETING_MINUTES profile)
+                                                               -- can run well past a short gloss
               NODE_TEXT_REF            VARCHAR(50),             -- "start:end" offsets into RAW_TEXT
               CREATED_AT                TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
             )""",

@@ -21,6 +21,23 @@ from utils.logging_utils import get_logger, log_event
 
 logger = get_logger(__name__)
 
+# Must stay <= DOCUMENT_INDEX.NODE_SUMMARY/NODE_TITLE's actual column
+# widths (see sql/00_setup_catalog.sql) — a defensive backstop, not the
+# primary control: a segmentation prompt asking for detailed summaries
+# (e.g. ORG_MEETING_MINUTES) can produce a response long enough to fail
+# the INSERT outright ("... is too long and would be truncated", which
+# Snowflake raises as an error rather than silently truncating) instead
+# of just losing a few words off the end. Truncating here first means a
+# verbose response degrades gracefully instead of failing the document
+# entirely.
+MAX_NODE_SUMMARY_CHARS = 8000
+MAX_NODE_TITLE_CHARS = 500
+
+
+def _truncate(text, max_chars: int) -> str:
+    text = text or ""
+    return text[:max_chars]
+
 
 @dataclass
 class IndexResult:
@@ -149,7 +166,8 @@ def _index_one_document(session, project: ProjectConfig, doc_id: int, file_name:
             f"""INSERT INTO {schema}.DOCUMENT_INDEX
                 (DOC_ID, PARENT_NODE_ID, NODE_LEVEL, NODE_TITLE, NODE_SUMMARY, NODE_TEXT_REF)
                 SELECT ?, NULL, 'document', ?, ?, ?""",
-            params=[doc_id, file_name, result.get("document_summary", ""),
+            params=[doc_id, _truncate(file_name, MAX_NODE_TITLE_CHARS),
+                    _truncate(result.get("document_summary", ""), MAX_NODE_SUMMARY_CHARS),
                     f"0:{len(text)}"],
         ).collect()
         root_node_id = session.sql(
@@ -164,8 +182,9 @@ def _index_one_document(session, project: ProjectConfig, doc_id: int, file_name:
                 f"""INSERT INTO {schema}.DOCUMENT_INDEX
                     (DOC_ID, PARENT_NODE_ID, NODE_LEVEL, NODE_TITLE, NODE_SUMMARY, NODE_TEXT_REF)
                     SELECT ?, ?, 'section', ?, ?, ?""",
-                params=[doc_id, root_node_id, section.get("title", ""),
-                        section.get("summary", ""),
+                params=[doc_id, root_node_id,
+                        _truncate(section.get("title", ""), MAX_NODE_TITLE_CHARS),
+                        _truncate(section.get("summary", ""), MAX_NODE_SUMMARY_CHARS),
                         f"{section.get('start', 0)}:{section.get('end', len(text))}"],
             ).collect()
 
