@@ -54,48 +54,59 @@ def complete(session, model: str, prompt: str, max_tokens: int = 4096,
     raise CortexError(f"Cortex call failed after {MAX_RETRIES} attempts: {last_err}")
 
 
+def _strip_markdown_fence(text: str) -> str:
+    """Strips a ```json ... ``` (or bare ```...```) code fence wrapping the
+    text, if present. A no-op if there's no fence."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.strip("`").strip()
+        if text.lower().startswith("json"):
+            text = text[4:].strip()
+    return text
+
+
 def complete_json(session, model: str, prompt: str, max_tokens: int = 4096) -> dict:
     """Call complete() and parse the response as JSON, with a clear error on failure."""
     raw = complete(session, model, prompt, max_tokens=max_tokens)
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`")
-        if cleaned.lower().startswith("json"):
-            cleaned = cleaned[4:]
-    try:
-        parsed = json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        logger.error("EVENT=JSON_PARSE_ERROR response_preview=%r", raw[:500])
-        raise CortexError(
-            f"Cortex response was not valid JSON: {e} — raw response preview: {raw[:300]!r}"
-        ) from e
 
     # Some models, asked to "return ONLY valid JSON", escape their entire
-    # answer as a JSON *string* instead of emitting the object directly —
-    # i.e. the response text is '"{\"document_summary\": ...}"' rather than
-    # '{"document_summary": ...}'. json.loads() on that yields a plain str
-    # (still valid JSON — a string is a valid top-level JSON value), which
-    # is itself the real JSON we want one level down. Unwrap up to twice
-    # before giving up, rather than failing on what's a known, systematic
-    # quirk of the model's output shape, not truly malformed data.
-    for _ in range(2):
-        if not isinstance(parsed, str):
-            break
+    # fenced answer as a JSON *string* instead of emitting the object
+    # directly — the raw text is '"```json\n{...}\n```"' (a JSON string
+    # whose content is itself the fenced JSON block), not '{...}' or even
+    # '```json\n{...}\n```' directly. A single fence-strip-then-parse pass
+    # can't handle this: the fence markers only become visible *after*
+    # unwrapping the outer string, so each unwrap needs its own fence-strip
+    # before the next parse attempt, not just the first one.
+    candidate = raw
+    last_error: Optional[json.JSONDecodeError] = None
+    parsed = None
+    for _ in range(3):  # bounded: a couple of unwrap levels is plenty
+        cleaned = _strip_markdown_fence(candidate)
         try:
-            parsed = json.loads(parsed)
-        except json.JSONDecodeError:
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError as e:
+            last_error = e
+            parsed = None
             break
+        if isinstance(parsed, dict):
+            return parsed
+        if isinstance(parsed, str):
+            candidate = parsed  # one level of JSON-string-encoding unwrapped; retry
+            continue
+        break  # some other non-dict, non-str JSON value (e.g. a list) — give up
 
-    if not isinstance(parsed, dict):
-        # Still not an object after unwrapping — a genuine non-JSON-object
-        # response (e.g. a plain refusal message), not just double-encoding.
-        # Include a raw preview in the raised message itself (not just the
-        # server-side log) so it's visible directly in the Streamlit error
-        # card — otherwise there's no way to tell a still-unresolved parse
-        # shape apart from a stale, not-yet-redeployed copy of this file.
-        logger.error("EVENT=JSON_PARSE_ERROR response_preview=%r", raw[:500])
+    # Either the final json.loads() failed outright, or it kept resolving
+    # to something that's never a dict (e.g. a genuine refusal message).
+    # Include a raw preview in the raised message itself (not just the
+    # server-side log) so it's visible directly in the Streamlit error
+    # card, not just Snowsight's server-side logs.
+    logger.error("EVENT=JSON_PARSE_ERROR response_preview=%r", raw[:500])
+    if last_error is not None:
         raise CortexError(
-            f"Cortex response was valid JSON but not a JSON object (got {type(parsed).__name__}) "
+            f"Cortex response was not valid JSON: {last_error} "
             f"— raw response preview: {raw[:300]!r}"
-        )
-    return parsed
+        ) from last_error
+    raise CortexError(
+        f"Cortex response was valid JSON but not a JSON object (got "
+        f"{type(parsed).__name__}) — raw response preview: {raw[:300]!r}"
+    )
