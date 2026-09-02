@@ -56,14 +56,18 @@ PROMPTS = {
     "GENERIC": """You are indexing a document into a navigable tree structure.
 Read the document text below and identify its natural sections (headings,
 topic breaks, or logical divisions — do not force a fixed set of section
-names). For each section, produce a concise 2-3 sentence summary plus the
-character offsets (start, end) of that section within the original text.
+names). For each section, produce a concise 2-3 sentence summary plus a
+"start_text" anchor: the exact first 8-15 words of that section, COPIED
+VERBATIM character-for-character from the document text below (same
+spelling, punctuation, and capitalization) — do not paraphrase or
+summarize it, it is used to locate the section programmatically by exact
+text search.
 {granularity_instruction}
 Return ONLY valid JSON in this shape, no commentary:
 {{
   "document_summary": "2-3 sentence summary of the whole document",
   "sections": [
-    {{"title": "...", "summary": "...", "start": 0, "end": 1234}}
+    {{"title": "...", "summary": "...", "start_text": "exact opening words of this section, copied verbatim"}}
   ]
 }}
 
@@ -95,12 +99,18 @@ one of these terms later needs to find it in the summary text itself, not
 just its general meaning. Do not force sections that don't exist in the
 text; if the document has no clear per-meeting breaks, fall back to its
 natural headings/topic breaks instead.
+
+For each section, also give a "start_text" anchor: the exact first 8-15
+words of that section, COPIED VERBATIM character-for-character from the
+document text below (same spelling, punctuation, and capitalization) — do
+not paraphrase or summarize it, it is used to locate the section
+programmatically by exact text search.
 {granularity_instruction}
 Return ONLY valid JSON in this shape, no commentary:
 {{
   "document_summary": "3-5 sentence summary of the whole document (date range covered, overall purpose, and any recurring topics, systems, or codes discussed across meetings)",
   "sections": [
-    {{"title": "e.g. 'Meeting — 12 Mar 2024' or a sheet/topic name", "summary": "...", "start": 0, "end": 1234}}
+    {{"title": "e.g. 'Meeting — 12 Mar 2024' or a sheet/topic name", "summary": "...", "start_text": "exact opening words of this section, copied verbatim"}}
   ]
 }}
 
@@ -148,6 +158,56 @@ INDEXING_MAX_TOKENS = {
 
 def _indexing_max_tokens(project: ProjectConfig) -> int:
     return INDEXING_MAX_TOKENS.get(project.segmentation_granularity, 8192)
+
+
+def _locate_section_offsets(text: str, sections: List[dict]) -> List[tuple]:
+    """
+    Turns each section's "start_text" anchor into a concrete (start, end)
+    character range, by locating the anchor with a literal string search
+    rather than trusting a numeric offset from the model.
+
+    This replaces an earlier design where the model was asked to return
+    "start"/"end" character positions directly — verified against real
+    indexed output to be unreliable: a section correctly titled/summarized
+    could still carry offsets pointing at unrelated text elsewhere in the
+    document (the model estimates positions in long text rather than
+    counting them), and in one observed case the offsets for an entire
+    14-section document only spanned the first ~3450 characters when the
+    actual text was 5000+ characters long. LLMs are far more reliable at
+    copying a short exact phrase than at reporting a character count, so
+    locating that phrase deterministically in Python removes the guess
+    entirely for wherever the anchor is found verbatim.
+
+    Sections are treated as contiguous and sequential: each one's end is
+    simply where the next one's anchor was found (or end-of-text for the
+    last section) — no separate "end" anchor is needed. Anchors are
+    searched for in document order, each starting from where the previous
+    one was found, so an anchor phrase that happens to repeat earlier in
+    the document doesn't get matched against the wrong occurrence.
+
+    If an anchor is missing, blank, or can't be found verbatim (e.g. the
+    model paraphrased instead of copying exactly), that section falls
+    back to starting exactly where the previous one ended — the section
+    still gets indexed with its own title/summary, just without a
+    precisely-located excerpt boundary of its own.
+    """
+    cursor = 0
+    starts = []
+    for section in sections:
+        anchor = (section.get("start_text") or "").strip()
+        idx = text.find(anchor, cursor) if anchor else -1
+        if idx == -1:
+            idx = cursor
+        starts.append(idx)
+        cursor = idx + len(anchor) if anchor else idx + 1
+
+    offsets = []
+    for i, start in enumerate(starts):
+        end = starts[i + 1] if i + 1 < len(starts) else len(text)
+        if end <= start:
+            end = min(start + 1, len(text))
+        offsets.append((start, end))
+    return offsets
 
 
 def build_index_for_project(session, project: ProjectConfig,
@@ -238,10 +298,13 @@ def _index_one_document(session, project: ProjectConfig, doc_id: int, file_name:
             params=[doc_id],
         ).collect()[0]["NODE_ID"]
 
-        for section in result.get("sections", []):
+        sections = result.get("sections", [])
+        offsets = _locate_section_offsets(text, sections)
+
+        for section, (start_off, end_off) in zip(sections, offsets):
             title = _truncate(section.get("title", ""), MAX_NODE_TITLE_CHARS)
             summary = _truncate(section.get("summary", ""), MAX_NODE_SUMMARY_CHARS)
-            text_ref = f"{section.get('start', 0)}:{section.get('end', len(text))}"
+            text_ref = f"{start_off}:{end_off}"
 
             inserted = False
             if project.enable_vector_search and embed_enabled[0]:
@@ -272,7 +335,7 @@ def _index_one_document(session, project: ProjectConfig, doc_id: int, file_name:
                 ).collect()
 
         log_event(logger, "INDEX_BUILD", project.project_code,
-                  doc_id=doc_id, sections=len(result.get("sections", [])))
+                  doc_id=doc_id, sections=len(sections))
 
     except Exception:
         logger.exception("EVENT=INDEX_BUILD_ERROR doc_id=%s file=%s", doc_id, file_name)
